@@ -6,7 +6,6 @@ import {
   Bot,
   Plug,
   Files,
-  Zap,
   ArrowRight,
   Activity as ActivityIcon,
 } from "lucide-react";
@@ -108,11 +107,6 @@ export default async function DashboardPage() {
     ]);
 
   const profile = (profileSnap.data() as Partial<UserProfile> | undefined) ?? {};
-  const automationsRun =
-    typeof (profile as { automationsRunCount?: number }).automationsRunCount ===
-    "number"
-      ? (profile as { automationsRunCount: number }).automationsRunCount
-      : 0;
   const firstName =
     (profile.fullName ?? session.name ?? "").split(" ")[0] || "there";
 
@@ -125,7 +119,7 @@ export default async function DashboardPage() {
         subtitle="Here's what's happening in your workspace."
       />
 
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Active Agents"
           value={agents}
@@ -140,11 +134,6 @@ export default async function DashboardPage() {
           label="Files Uploaded"
           value={files}
           icon={<Files className="h-4 w-4" />}
-        />
-        <StatCard
-          label="Automations Run"
-          value={automationsRun}
-          icon={<Zap className="h-4 w-4" />}
         />
         <UsageStat usage={usage} />
       </div>
