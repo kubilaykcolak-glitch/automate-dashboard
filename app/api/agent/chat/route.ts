@@ -716,6 +716,13 @@ export async function POST(request: NextRequest): Promise<Response> {
               } catch (err) {
                 const message =
                   err instanceof Error ? err.message : "Export failed.";
+                // Log the full error to the server so Vercel logs surface
+                // the real stack trace — the model only sees `message`.
+                console.error("[chat] create_export failed", {
+                  format: exportInput.format,
+                  filename: exportInput.filename,
+                  error: err,
+                });
                 toolResultBlocks.push({
                   type: "tool_result",
                   tool_use_id: blk.id,
