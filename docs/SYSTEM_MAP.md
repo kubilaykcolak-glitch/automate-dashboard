@@ -130,8 +130,8 @@ All paths rooted at `/users/{uid}/`. See `firestore.rules` for the deployed rule
 | `/users/{uid}/activity/{auto}` | `{type, message, metadata?, createdAt}` | `logActivity` + `addActivityToBatch` (admin) |
 | `/users/{uid}/preferences/notifications` | `{emailUpdates, agentAlerts, billingReminders, updatedAt}` | Settings page (client) |
 
-**Composite indexes needed** (auto-prompted on first query):
-- `agentSessions`: `(agentId, updatedAt desc)`
+**Composite indexes** — declared in `firestore.indexes.json` (deploy with `firebase deploy --only firestore:indexes` if you have firebase-tools, or click the create-URL surfaced by `/api/agent/sessions` when the index is missing):
+- `agentSessions`: `(agentId asc, updatedAt desc)` — required by `GET /api/agent/sessions?agentId=...`. Without it the route returns 503 `code: "missing_index"` with `createIndexUrl` for one-click setup.
 
 ## Storage paths
 

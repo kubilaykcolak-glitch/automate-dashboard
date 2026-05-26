@@ -1,0 +1,14 @@
+{
+  "indexes": [
+    {
+      "_comment": "Used by /api/agent/sessions GET — list a user's sessions for a given agent, newest first. Without this, Firestore returns FAILED_PRECONDITION with a one-click create URL.",
+      "collectionGroup": "agentSessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "agentId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

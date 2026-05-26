@@ -37,33 +37,73 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const snap = await adminDb
-    .collection("users")
-    .doc(session.uid)
-    .collection("agentSessions")
-    .where("agentId", "==", agentId)
-    .orderBy("updatedAt", "desc")
-    .get();
+  // Composite query: where(agentId) + orderBy(updatedAt). Firestore requires
+  // a composite index on (agentId asc, updatedAt desc). If it doesn't exist
+  // the query throws FAILED_PRECONDITION with a one-click URL to create it.
+  // Catch and surface the real error so the client can guide the user
+  // instead of showing a generic "Failed to load sessions".
+  try {
+    const snap = await adminDb
+      .collection("users")
+      .doc(session.uid)
+      .collection("agentSessions")
+      .where("agentId", "==", agentId)
+      .orderBy("updatedAt", "desc")
+      .get();
 
-  const sessions: SessionListItem[] = snap.docs.map((d) => {
-    const data = d.data() as {
-      agentId?: string;
-      status?: string;
-      createdAt?: Timestamp;
-      updatedAt?: Timestamp;
-      lastMessageAt?: Timestamp;
-      lastMessagePreview?: string;
-    };
-    return {
-      id: d.id,
-      agentId: data.agentId ?? agentId,
-      status: data.status ?? "active",
-      createdAt: tsToIso(data.createdAt),
-      updatedAt: tsToIso(data.updatedAt),
-      lastMessageAt: tsToIso(data.lastMessageAt),
-      lastMessagePreview: data.lastMessagePreview ?? null,
-    };
-  });
+    const sessions: SessionListItem[] = snap.docs.map((d) => {
+      const data = d.data() as {
+        agentId?: string;
+        status?: string;
+        createdAt?: Timestamp;
+        updatedAt?: Timestamp;
+        lastMessageAt?: Timestamp;
+        lastMessagePreview?: string;
+      };
+      return {
+        id: d.id,
+        agentId: data.agentId ?? agentId,
+        status: data.status ?? "active",
+        createdAt: tsToIso(data.createdAt),
+        updatedAt: tsToIso(data.updatedAt),
+        lastMessageAt: tsToIso(data.lastMessageAt),
+        lastMessagePreview: data.lastMessagePreview ?? null,
+      };
+    });
 
-  return NextResponse.json({ sessions });
+    return NextResponse.json({ sessions });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const code =
+      err instanceof Error && "code" in err
+        ? (err as { code?: number | string }).code
+        : undefined;
+    console.error("[sessions list] query failed", { uid: session.uid, agentId, code, message });
+
+    // FAILED_PRECONDITION = missing composite index. Firestore embeds a
+    // create-index URL in the error string — pass it through to the client
+    // so the user can click it.
+    if (
+      typeof message === "string" &&
+      (message.includes("FAILED_PRECONDITION") ||
+        message.includes("requires an index"))
+    ) {
+      const urlMatch = message.match(/https:\/\/console\.firebase\.google\.com\/[^\s"]+/);
+      return NextResponse.json(
+        {
+          error:
+            "Firestore is missing a composite index for this query. Create it once and this stops happening.",
+          code: "missing_index",
+          createIndexUrl: urlMatch ? urlMatch[0] : null,
+          details: message,
+        },
+        { status: 503 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: "Failed to load sessions.", details: message },
+      { status: 500 }
+    );
+  }
 }

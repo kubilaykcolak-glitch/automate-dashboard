@@ -21,6 +21,7 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -36,6 +37,16 @@ import type { AgentProfile } from "@/lib/anthropic/types";
 import { AgentOnboardingWizard } from "@/components/agent-onboarding-wizard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -125,6 +136,10 @@ export default function AgentChatPage() {
    * with real Python/bash, file generation, ~5-10× the cost per turn.
    */
   const [richMode, setRichMode] = useState(false);
+  /** Session pending deletion (drives the confirm AlertDialog). */
+  const [pendingDeleteSession, setPendingDeleteSession] =
+    useState<SessionListItem | null>(null);
+  const [deletingSession, setDeletingSession] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -137,7 +152,31 @@ export default function AgentChatPage() {
     (async () => {
       try {
         const res = await fetch(`/api/agent/sessions?agentId=${encodeURIComponent(agentId)}`);
-        if (!res.ok) throw new Error("Failed to load sessions.");
+        if (!res.ok) {
+          // Try to surface the structured error from the server so the user
+          // can actually act on it (e.g. click through to create a missing
+          // Firestore index).
+          let payload: {
+            error?: string;
+            code?: string;
+            createIndexUrl?: string | null;
+            details?: string;
+          } = {};
+          try {
+            payload = await res.json();
+          } catch {
+            // ignore; payload stays empty
+          }
+          if (payload.code === "missing_index" && payload.createIndexUrl) {
+            toast.error(
+              "Sessions list is missing a Firestore composite index. Opening the create page in a new tab — click 'Save' there.",
+              { duration: 8000 }
+            );
+            window.open(payload.createIndexUrl, "_blank", "noopener");
+            return;
+          }
+          throw new Error(payload.error || `Failed to load sessions (${res.status}).`);
+        }
         const data = (await res.json()) as { sessions: SessionListItem[] };
         if (!cancelled) setSessions(data.sessions ?? []);
       } catch (e) {
@@ -230,6 +269,36 @@ export default function AgentChatPage() {
   }
 
   // ---------- Session loading ----------
+
+  async function confirmDeleteSession() {
+    if (!pendingDeleteSession || !user) return;
+    const target = pendingDeleteSession;
+    setDeletingSession(true);
+    try {
+      const res = await fetch(`/api/agent/sessions/${target.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          (data as { error?: string }).error ?? `Delete failed (${res.status})`
+        );
+      }
+      setSessions((prev) => prev.filter((s) => s.id !== target.id));
+      // If the deleted session is the currently-open one, reset to a fresh chat.
+      if (sessionId === target.id) {
+        setSessionId(null);
+        setMessages([]);
+        setAttachedFileIds([]);
+      }
+      toast.success("Conversation deleted.");
+      setPendingDeleteSession(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not delete conversation.");
+    } finally {
+      setDeletingSession(false);
+    }
+  }
 
   async function loadSession(targetSessionId: string) {
     if (!user) return;
@@ -689,14 +758,17 @@ export default function AgentChatPage() {
             ) : (
               <ul className="space-y-1">
                 {sessions.map((s) => (
-                  <li key={s.id}>
+                  <li
+                    key={s.id}
+                    className={cn(
+                      "group flex items-center gap-1 rounded-md transition-colors hover:bg-accent",
+                      sessionId === s.id && "bg-accent"
+                    )}
+                  >
                     <button
                       type="button"
                       onClick={() => loadSession(s.id)}
-                      className={cn(
-                        "w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent",
-                        sessionId === s.id && "bg-accent"
-                      )}
+                      className="min-w-0 flex-1 px-2 py-1.5 text-left text-xs"
                     >
                       <div className="truncate">
                         {s.lastMessagePreview ?? "New conversation"}
@@ -706,6 +778,18 @@ export default function AgentChatPage() {
                           ? new Date(s.updatedAt).toLocaleString()
                           : ""}
                       </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingDeleteSession(s);
+                      }}
+                      aria-label="Delete conversation"
+                      title="Delete conversation"
+                      className="mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100 focus:opacity-100"
+                    >
+                      <Trash2 className="h-3 w-3" />
                     </button>
                   </li>
                 ))}
@@ -921,6 +1005,34 @@ export default function AgentChatPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={pendingDeleteSession !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteSession(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this conversation?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDeleteSession
+                ? `"${pendingDeleteSession.lastMessagePreview ?? "New conversation"}" and all its messages will be permanently removed. This cannot be undone.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingSession}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deletingSession}
+              onClick={confirmDeleteSession}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingSession ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
