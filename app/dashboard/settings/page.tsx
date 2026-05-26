@@ -542,9 +542,16 @@ function NotificationsSection({ authLoading }: { authLoading: boolean }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Notifications</CardTitle>
+        <CardTitle className="text-base">
+          Notifications{" "}
+          <span className="ml-2 inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+            Coming soon
+          </span>
+        </CardTitle>
         <CardDescription>
-          Choose what we email you about.
+          Email delivery isn&apos;t wired up yet — your preferences will be
+          saved and applied as soon as it ships. Until then, no emails will
+          be sent regardless of these toggles.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-1">
