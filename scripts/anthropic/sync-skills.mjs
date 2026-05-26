@@ -53,7 +53,10 @@ const REPO_ROOT = join(__dirname, "..", "..");
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CONFIG = {
-  betaHeader: "managed-agents-2026-04-01",
+  // Skills API uses its OWN beta header value, distinct from managed-agents.
+  // Confirmed from the official SDK source at
+  // src/resources/beta/skills/skills.ts (Stainless-generated from OpenAPI).
+  skillsBetaHeader: "skills-2025-10-02",
   apiBase: "https://api.anthropic.com",
   skillsDir: join(REPO_ROOT, "lib", "anthropic", "skills"),
   lockPath: join(REPO_ROOT, "skills-for-anthropic", "skills.lock.json"),
@@ -191,122 +194,75 @@ async function anthropic(path, options = {}) {
   const headers = {
     "x-api-key": API_KEY,
     "anthropic-version": "2023-06-01",
-    "anthropic-beta": CONFIG.betaHeader,
+    "anthropic-beta": CONFIG.skillsBetaHeader,
     ...(options.headers ?? {}),
   };
-  if (options.body !== undefined && !(options.body instanceof FormData)) {
-    headers["content-type"] = "application/json";
-  }
-  // The Skills API requires both the anthropic-beta header AND a ?beta=true
-  // query parameter — the SDK reference at api.md shows it as
-  // `POST /v1/skills?beta=true`. Append automatically if not already present.
+  // Skills API requires ?beta=true query param in addition to the header.
   const url = new URL(`${CONFIG.apiBase}${path}`);
   if (!url.searchParams.has("beta")) url.searchParams.set("beta", "true");
+  // Let fetch set the multipart boundary automatically when body is FormData;
+  // only set content-type explicitly for JSON bodies (none used here).
   const res = await fetch(url.toString(), {
     method: options.method ?? "GET",
     headers,
-    body:
-      options.body instanceof FormData
-        ? options.body
-        : options.body !== undefined
-          ? JSON.stringify(options.body)
-          : undefined,
+    body: options.body,
   });
   return res;
 }
 
 /**
- * Upload a new custom skill. Tries JSON shape first; falls back to multipart
- * if the API rejects with 4xx. Logs the raw response on failure so we can
- * tighten the shape next iteration.
+ * Multipart form factory: builds the POST body shared by create + version.
+ * Skills API expects the SKILL.md as a `files` field (array), with the
+ * folder name encoded in the filename so Anthropic can match SKILL.md to
+ * its containing skill directory.
+ *
+ * Shape confirmed from the official SDK source at
+ * src/resources/beta/skills/skills.ts — SkillCreateParams says:
+ *   "All files must be in the same top-level directory and must include
+ *    a SKILL.md file at the root of that directory."
  */
-async function createSkill(skill) {
-  // Attempt 1: JSON body. Most modern Anthropic endpoints accept JSON.
-  const jsonAttempt = await anthropic("/v1/skills", {
-    method: "POST",
-    body: {
-      display_name: skill.name,
-      description: skill.description,
-      // SKILL.md body content — most likely field names. We try a few common
-      // names by including all of them; the server should accept whichever it
-      // expects and ignore the rest.
-      content: skill.skillMd,
-      skill_md: skill.skillMd,
-      instructions: skill.skillMd,
-    },
-  });
-  if (jsonAttempt.ok) {
-    return await jsonAttempt.json();
-  }
-
-  const jsonError = await jsonAttempt.text();
-  console.warn(`  JSON upload returned ${jsonAttempt.status}. Trying multipart…`);
-  if (process.env.DEBUG_SYNC) console.warn(`  JSON response: ${jsonError}`);
-
-  // Attempt 2: multipart with the SKILL.md as a file.
+function buildSkillForm(skill, { includeDisplayTitle }) {
   const form = new FormData();
-  form.append("display_name", skill.name);
-  form.append("description", skill.description);
-  form.append(
-    "file",
-    new Blob([skill.skillMd], { type: "text/markdown" }),
-    "SKILL.md"
-  );
-  const multipartAttempt = await anthropic("/v1/skills", {
-    method: "POST",
-    body: form,
-  });
-  if (multipartAttempt.ok) {
-    return await multipartAttempt.json();
+  if (includeDisplayTitle) {
+    form.append("display_title", skill.name);
   }
-  const multipartError = await multipartAttempt.text();
-  throw new Error(
-    `Both upload formats failed.\n` +
-      `  JSON (${jsonAttempt.status}): ${jsonError.slice(0, 500)}\n` +
-      `  Multipart (${multipartAttempt.status}): ${multipartError.slice(0, 500)}\n` +
-      `\n` +
-      `Adjust createSkill() in scripts/anthropic/sync-skills.mjs based on the response.`
+  // Encode the skill name as the directory prefix so Anthropic can group
+  // multiple files (scripts/, references/) under the same skill folder later.
+  // For now we ship a single SKILL.md; the prefix still required.
+  form.append(
+    "files",
+    new Blob([skill.skillMd], { type: "text/markdown" }),
+    `${skill.name}/SKILL.md`
   );
+  return form;
 }
 
 /**
- * Create a new version of an existing skill (for updates to its content).
- * Same body-shape strategy as createSkill().
+ * Create a new custom skill via POST /v1/skills?beta=true (multipart).
+ * Uses the skills-2025-10-02 beta header (set globally in anthropic()).
+ */
+async function createSkill(skill) {
+  const res = await anthropic("/v1/skills", {
+    method: "POST",
+    body: buildSkillForm(skill, { includeDisplayTitle: true }),
+  });
+  if (res.ok) return await res.json();
+  const body = await res.text();
+  throw new Error(`HTTP ${res.status}: ${body.slice(0, 800)}`);
+}
+
+/**
+ * Create a new version of an existing skill via
+ * POST /v1/skills/{skill_id}/versions?beta=true (multipart).
  */
 async function createSkillVersion(skillId, skill) {
-  const jsonAttempt = await anthropic(`/v1/skills/${skillId}/versions`, {
+  const res = await anthropic(`/v1/skills/${skillId}/versions`, {
     method: "POST",
-    body: {
-      content: skill.skillMd,
-      skill_md: skill.skillMd,
-      instructions: skill.skillMd,
-    },
+    body: buildSkillForm(skill, { includeDisplayTitle: false }),
   });
-  if (jsonAttempt.ok) {
-    return await jsonAttempt.json();
-  }
-  const jsonError = await jsonAttempt.text();
-  if (process.env.DEBUG_SYNC) console.warn(`  JSON version response: ${jsonError}`);
-
-  const form = new FormData();
-  form.append(
-    "file",
-    new Blob([skill.skillMd], { type: "text/markdown" }),
-    "SKILL.md"
-  );
-  const multipartAttempt = await anthropic(`/v1/skills/${skillId}/versions`, {
-    method: "POST",
-    body: form,
-  });
-  if (multipartAttempt.ok) {
-    return await multipartAttempt.json();
-  }
-  const multipartError = await multipartAttempt.text();
-  throw new Error(
-    `Both version upload formats failed for ${skillId}.\n` +
-      `  JSON (${jsonAttempt.status}): ${jsonError.slice(0, 500)}\n` +
-      `  Multipart (${multipartAttempt.status}): ${multipartError.slice(0, 500)}`
-  );
+  if (res.ok) return await res.json();
+  const body = await res.text();
+  throw new Error(`HTTP ${res.status}: ${body.slice(0, 800)}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
