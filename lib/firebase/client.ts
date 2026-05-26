@@ -14,45 +14,40 @@ const firebaseConfig = {
 
 const isConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
 
-function notConfigured(): never {
-  throw new Error(
-    "Firebase client is not configured. Set NEXT_PUBLIC_FIREBASE_* env vars in .env.local."
+if (!isConfigured) {
+  // Throwing at module load is preferable to a silent runtime failure later.
+  // If you see this, your NEXT_PUBLIC_FIREBASE_* env vars are missing.
+  console.error(
+    "Firebase client is not configured. Set NEXT_PUBLIC_FIREBASE_* env vars."
   );
 }
 
-let _app: FirebaseApp | null = null;
-let _auth: Auth | null = null;
-let _db: Firestore | null = null;
-let _storage: FirebaseStorage | null = null;
+// IMPORTANT: we initialise eagerly so the exported `auth`, `db`, and `storage`
+// are real instances — not Proxies. The Firestore client SDK does
+// `instanceof Firestore` checks on the first argument of collection() / doc(),
+// which Proxies fail. (That was the cause of the
+// "Expected first argument to collection() to be a CollectionReference..." bug.)
+const app: FirebaseApp = isConfigured
+  ? getApps().length
+    ? getApp()
+    : initializeApp(firebaseConfig)
+  : // Fall back to a clearly-broken app so module-load doesn't crash — any
+    // attempt to use auth/db/storage will throw with a Firebase-native error.
+    (null as unknown as FirebaseApp);
 
-function getOrInitApp(): FirebaseApp {
-  if (!isConfigured) notConfigured();
-  if (_app) return _app;
-  _app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return _app;
-}
-
-export const auth: Auth = new Proxy({} as Auth, {
-  get(_target, prop, receiver) {
-    if (!_auth) _auth = getAuth(getOrInitApp());
-    return Reflect.get(_auth, prop, receiver);
-  },
-});
-
-export const db: Firestore = new Proxy({} as Firestore, {
-  get(_target, prop, receiver) {
-    if (!_db) _db = getFirestore(getOrInitApp());
-    return Reflect.get(_db, prop, receiver);
-  },
-});
-
-export const storage: FirebaseStorage = new Proxy({} as FirebaseStorage, {
-  get(_target, prop, receiver) {
-    if (!_storage) _storage = getStorage(getOrInitApp());
-    return Reflect.get(_storage, prop, receiver);
-  },
-});
+export const auth: Auth = app ? getAuth(app) : (null as unknown as Auth);
+export const db: Firestore = app
+  ? getFirestore(app)
+  : (null as unknown as Firestore);
+export const storage: FirebaseStorage = app
+  ? getStorage(app)
+  : (null as unknown as FirebaseStorage);
 
 export function getFirebaseApp(): FirebaseApp {
-  return getOrInitApp();
+  if (!app) {
+    throw new Error(
+      "Firebase client is not configured. Set NEXT_PUBLIC_FIREBASE_* env vars."
+    );
+  }
+  return app;
 }
