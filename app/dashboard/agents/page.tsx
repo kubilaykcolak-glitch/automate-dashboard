@@ -122,9 +122,17 @@ export default function AgentsPage() {
     }
   }
 
-  const isLoading = authLoading || loading;
+  // The dashboard layout has already verified the server-side session cookie,
+  // but the client-side Firebase Auth state can be missing (cleared storage,
+  // incognito, etc.). When that happens our useEffect never subscribes and
+  // the page is stuck on the skeleton forever — detect and surface it.
+  const authMismatch = !authLoading && !user;
+  const isLoading = (authLoading || loading) && !authMismatch;
   const showEmpty =
-    !isLoading && activeAgents.length === 0 && availableConfigs.length === 0;
+    !isLoading &&
+    !authMismatch &&
+    activeAgents.length === 0 &&
+    availableConfigs.length === 0;
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -132,6 +140,28 @@ export default function AgentsPage() {
         title="Agents"
         subtitle="Activate a built-in agent to start using it, or customise one you've already activated."
       />
+
+      {authMismatch && (
+        <Card>
+          <CardContent className="space-y-4 py-6 text-center">
+            <div>
+              <div className="text-base font-semibold">Sign in to continue</div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Your server session is valid but Firebase Auth on this browser
+                is missing — sign in again to reconnect.
+              </p>
+            </div>
+            <form action="/api/auth/logout" method="POST">
+              <button
+                type="submit"
+                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+              >
+                Sign in again
+              </button>
+            </form>
+          </CardContent>
+        </Card>
+      )}
 
       {loadError && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
