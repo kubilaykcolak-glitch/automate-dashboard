@@ -36,7 +36,7 @@
 | `/dashboard/agents/[agentId]` | `app/dashboard/agents/[agentId]/page.tsx` | ditto | Chat UI; wizard when no profile yet |
 | `/dashboard/integrations` | `app/dashboard/integrations/page.tsx` | ditto | OAuth provider cards; status-aware |
 | `/dashboard/files` | `app/dashboard/files/page.tsx` | ditto | Drag-drop upload + file table |
-| `/dashboard/billing` | `app/dashboard/billing/page.tsx` | ditto | Plan status + Manage Billing button |
+| `/dashboard/billing` | `app/dashboard/billing/page.tsx` | ditto | Usage breakdown (messages + tokens + cost via `<UsageCard>`) + plan status + Manage Billing button |
 | `/dashboard/settings` | `app/dashboard/settings/page.tsx` | ditto | Tabs: Profile / Security / Notifications |
 
 **Dashboard route group:** lives at literal `app/dashboard/`, NOT `app/(dashboard)/`. Renamed because route groups strip the URL segment — old version made `/dashboard/agents` 404. **Do not re-introduce `(dashboard)`.**

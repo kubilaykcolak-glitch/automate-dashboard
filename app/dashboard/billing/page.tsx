@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card";
 import { ManageBillingButton } from "@/components/manage-billing-button";
 import { PageHeader } from "@/components/ui/page-header";
+import { UsageCard } from "@/components/usage-card";
 import type { UserProfile } from "@/types/database";
 
 const STATUS_LABEL: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
@@ -43,6 +44,8 @@ export default async function BillingPage() {
         title="Billing"
         subtitle="Manage your subscription and payment details."
       />
+
+      <UsageCard uid={session.uid} />
 
       <Card>
         <CardHeader>

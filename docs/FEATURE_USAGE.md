@@ -113,6 +113,7 @@ Connection flow when enabled:
 
 ## Billing (`/dashboard/billing`)
 
+- **Usage card at the top.** Shows this month's messages used vs limit and tokens used vs budget with progress bars (green / amber / red). Detailed token breakdown (input / output / cache read / cache write) and total USD cost. When the user is approaching or over either limit, an upgrade CTA appears. The dashboard home's "Messages this month" tile links here for full detail.
 - Shows current plan status (Inactive / Pro / Admin).
 - "Manage Billing" → Stripe Customer Portal (requires Customer Portal activation in Stripe's settings once per mode).
 - Subscribe button on `/pricing` → Stripe Checkout → webhook flips `subscriptionStatus` to "active".
