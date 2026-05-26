@@ -27,21 +27,20 @@ interface ProviderCard {
   name: string;
   description: string;
   color: string;
-  enabled: boolean;
 }
 
-// Mirrors lib/integrations/providers.ts for the client. The `enabled` flag is
-// the user-facing "is this wired up yet" — separate from whether the OAuth
-// app is configured at runtime (the connect endpoint also checks that).
+// Visual catalogue only — `enabled` is fetched from /api/integrations/status
+// at mount so the UI reflects which providers actually have credentials
+// configured on the server right now.
 const PROVIDER_CARDS: ProviderCard[] = [
-  { id: "gmail", internalId: "google", name: "Gmail", description: "Read and search emails programmatically.", color: "bg-red-500", enabled: true },
-  { id: "google-sheets", internalId: "google", name: "Google Sheets", description: "Read spreadsheet data.", color: "bg-emerald-500", enabled: true },
-  { id: "google-drive", internalId: "google", name: "Google Drive", description: "Read files and folders.", color: "bg-amber-500", enabled: true },
-  { id: "slack", internalId: "slack", name: "Slack", description: "Post messages and read channels.", color: "bg-fuchsia-600", enabled: true },
-  { id: "quickbooks", internalId: "quickbooks", name: "QuickBooks", description: "Pull accounting and invoice data.", color: "bg-green-700", enabled: false },
-  { id: "stripe", internalId: "stripe-connect", name: "Stripe", description: "Sync payments, customers, and subscriptions.", color: "bg-indigo-500", enabled: false },
-  { id: "figma", internalId: "figma", name: "Figma", description: "Read design files and components.", color: "bg-neutral-800", enabled: false },
-  { id: "xero", internalId: "xero", name: "Xero", description: "Sync bookkeeping and reports.", color: "bg-sky-500", enabled: false },
+  { id: "gmail", internalId: "google", name: "Gmail", description: "Read and search emails programmatically.", color: "bg-red-500" },
+  { id: "google-sheets", internalId: "google", name: "Google Sheets", description: "Read spreadsheet data.", color: "bg-emerald-500" },
+  { id: "google-drive", internalId: "google", name: "Google Drive", description: "Read files and folders.", color: "bg-amber-500" },
+  { id: "slack", internalId: "slack", name: "Slack", description: "Post messages and read channels.", color: "bg-fuchsia-600" },
+  { id: "quickbooks", internalId: "quickbooks", name: "QuickBooks", description: "Pull accounting and invoice data.", color: "bg-green-700" },
+  { id: "stripe", internalId: "stripe-connect", name: "Stripe", description: "Sync payments, customers, and subscriptions.", color: "bg-indigo-500" },
+  { id: "figma", internalId: "figma", name: "Figma", description: "Read design files and components.", color: "bg-neutral-800" },
+  { id: "xero", internalId: "xero", name: "Xero", description: "Sync bookkeeping and reports.", color: "bg-sky-500" },
 ];
 
 export default function IntegrationsPage() {
@@ -49,7 +48,26 @@ export default function IntegrationsPage() {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [enabledMap, setEnabledMap] = useState<Record<string, boolean>>({});
   const searchParams = useSearchParams();
+
+  // Fetch which providers have OAuth credentials configured server-side.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/integrations/status");
+        if (!res.ok) return;
+        const data = (await res.json()) as { status: Record<string, boolean> };
+        if (!cancelled) setEnabledMap(data.status ?? {});
+      } catch {
+        // best-effort; everything defaults to disabled which is the safe state
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Surface ?connected=... and ?error=... params from the OAuth callback.
   useEffect(() => {
@@ -83,7 +101,7 @@ export default function IntegrationsPage() {
   }, [integrations]);
 
   async function onDisconnect(card: ProviderCard) {
-    if (!user || !card.enabled) return;
+    if (!user || !enabledMap[card.id]) return;
     const confirmMessage =
       card.internalId === "google"
         ? "Disconnect Google? Gmail, Drive, and Sheets share the same grant and will all disconnect."
@@ -105,7 +123,7 @@ export default function IntegrationsPage() {
   }
 
   function onConnect(card: ProviderCard) {
-    if (!card.enabled) return;
+    if (!enabledMap[card.id]) return;
     const url = `/api/integrations/${card.internalId}/connect?card=${encodeURIComponent(card.id)}&returnTo=${encodeURIComponent("/dashboard/integrations")}`;
     window.location.href = url;
   }
@@ -122,8 +140,9 @@ export default function IntegrationsPage() {
       {!loading && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {PROVIDER_CARDS.map((card) => {
+            const enabled = enabledMap[card.id] ?? false;
             const integration = statusByInternalId.get(card.internalId);
-            const isConnected = integration?.status === "connected";
+            const isConnected = enabled && integration?.status === "connected";
             const pending = pendingId === card.id;
             const disabled = authLoading || !user || pending;
 
@@ -143,7 +162,7 @@ export default function IntegrationsPage() {
                         Connected
                       </Badge>
                     )}
-                    {!card.enabled && (
+                    {!enabled && (
                       <Badge variant="secondary" className="gap-1">
                         <Lock className="h-3 w-3" />
                         Coming soon
@@ -163,7 +182,7 @@ export default function IntegrationsPage() {
                   )}
                 </CardContent>
                 <CardFooter>
-                  {!card.enabled ? (
+                  {!enabled ? (
                     <Button variant="outline" className="w-full" disabled>
                       Coming soon
                     </Button>
