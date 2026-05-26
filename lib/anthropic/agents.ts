@@ -20,6 +20,17 @@ export const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const DEFAULT_MAX_TOKENS = 2000;
 
 /**
+ * Controls how much Claude reasons before responding.
+ * - "low"    cheapest + fastest, terser replies, fewer tool calls — good for simple chat
+ * - "medium" balanced sweet spot; ~half the cost of "high" on most prompts
+ * - "high"   Sonnet 4.6 default; deepest reasoning, more thorough responses
+ *
+ * Switch to "medium" once message volume picks up — same quality on most
+ * conversations, noticeably lower bill. Just change this string.
+ */
+export const DEFAULT_EFFORT: "low" | "medium" | "high" = "high";
+
+/**
  * Base runner used by every agent. Takes the agent's system prompt, the
  * conversation so far, and optional per-call context. Returns a typed result —
  * never throws — so callers can branch on `result.ok` instead of try/catch.

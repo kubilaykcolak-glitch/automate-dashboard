@@ -4,7 +4,11 @@ import { adminDb } from "@/lib/firebase/admin";
 import { getSessionUser } from "@/lib/firebase/session";
 import { anthropic } from "@/lib/anthropic/client";
 import { getAgentConfig } from "@/lib/anthropic/agent-configs";
-import { DEFAULT_MAX_TOKENS, DEFAULT_MODEL } from "@/lib/anthropic/agents";
+import {
+  DEFAULT_EFFORT,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MODEL,
+} from "@/lib/anthropic/agents";
 import type { AgentProfileSchema, ProfileField } from "@/lib/anthropic/types";
 import {
   attachContextToMessages,
@@ -298,6 +302,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         const anthropicStream = await anthropic.messages.create({
           model: DEFAULT_MODEL,
           max_tokens: DEFAULT_MAX_TOKENS,
+          output_config: { effort: DEFAULT_EFFORT },
           system: profileBlock
             ? [
                 {
