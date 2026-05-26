@@ -229,8 +229,11 @@ function buildSkillForm(skill, { includeDisplayTitle }) {
   // Encode the skill name as the directory prefix so Anthropic can group
   // multiple files (scripts/, references/) under the same skill folder later.
   // For now we ship a single SKILL.md; the prefix still required.
+  // Field name MUST be "files[]" with brackets — server validates the literal
+  // PHP-style array name. Without the brackets we get a 400
+  // "No files provided. Please provide files using 'files[]' field."
   form.append(
-    "files",
+    "files[]",
     new Blob([skill.skillMd], { type: "text/markdown" }),
     `${skill.name}/SKILL.md`
   );
