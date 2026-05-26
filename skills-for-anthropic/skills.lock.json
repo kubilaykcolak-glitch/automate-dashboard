@@ -4,10 +4,76 @@
     "accountancy": {
       "uk-vat-flat-rate": {
         "skill_id": "skill_01NL2jQZdKLFGZgSENShHQek",
-        "version": "1",
-        "content_hash": "sha256:bootstrap-placeholder",
-        "uploaded_at": "2026-05-26T00:00:00.000Z",
+        "version": "1779836787893433",
+        "content_hash": "sha256:72078ff55f80c837887ccd52658a11de75567cfa110c18599219277003e0937a",
+        "uploaded_at": "2026-05-26T23:06:45.182Z",
         "_note": "Uploaded manually via the Anthropic console before sync automation existed. Content hash is a placeholder — the next sync run will detect a mismatch and create a new version with the current local content."
+      },
+      "allowable-business-expenses": {
+        "skill_id": "skill_01AoqWSUfNhTYTjLjf7YHm3j",
+        "version": "1779836778258496",
+        "content_hash": "sha256:c4f33fc93f50a54c44bde28bd79048a1762d0860483ab6d9588d6cb9b8fe41b8",
+        "uploaded_at": "2026-05-26T23:06:35.440Z"
+      },
+      "corporation-tax-bands": {
+        "skill_id": "skill_01FUYdoskXCJNzxTMU3Ws3Tj",
+        "version": "1779836779169124",
+        "content_hash": "sha256:6003679406c93f5f64bb0256d609e7bfaee70d24a0bb2ccf4dfae88085efef20",
+        "uploaded_at": "2026-05-26T23:06:36.450Z"
+      },
+      "directors-loan-account": {
+        "skill_id": "skill_01N9ibHetXqc7STSYgA6PLoE",
+        "version": "1779836780164175",
+        "content_hash": "sha256:0b53a993d86d53a9f78ef08c3f3507a9c15482325c0eefbe0ec1fc1ad8501709",
+        "uploaded_at": "2026-05-26T23:06:37.378Z"
+      },
+      "dividend-taxation": {
+        "skill_id": "skill_01JBy4pabb22HEcrsK5TdJEw",
+        "version": "1779836781082894",
+        "content_hash": "sha256:68ccbb6f094cce13e0744058b415c2a53eec440629bbaf960226a5cfb55484f7",
+        "uploaded_at": "2026-05-26T23:06:38.295Z"
+      },
+      "ir35-off-payroll-working": {
+        "skill_id": "skill_01GC39JYWVFjgAgYN6iWFG9P",
+        "version": "1779836782364154",
+        "content_hash": "sha256:eeee7c2e5c7e63fd91a58fad6d1f9eb5ee0334e7671548f291ae833009390d9b",
+        "uploaded_at": "2026-05-26T23:06:39.564Z"
+      },
+      "mileage-and-vehicle-expenses": {
+        "skill_id": "skill_01W15gEPDFYrUU1YLnPuXWT2",
+        "version": "1779836783272616",
+        "content_hash": "sha256:4afaf3d0cc7a64d66c3ba7b36e6bccf2b40d8b09bc362c428c937da1daf898fc",
+        "uploaded_at": "2026-05-26T23:06:41.540Z"
+      },
+      "payments-on-account": {
+        "skill_id": "skill_01J8wjVksMXcBqSpzusH7Tp6",
+        "version": "1779836785270555",
+        "content_hash": "sha256:d808d86a110788ef91e6519e2c15bd2a48f614bf5ce757bab1c93c136dbb1b4d",
+        "uploaded_at": "2026-05-26T23:06:42.524Z"
+      },
+      "self-assessment-deadlines": {
+        "skill_id": "skill_019RgEnvnzoKSbZ1jhEkd5Fu",
+        "version": "1779836786561924",
+        "content_hash": "sha256:8843dc403c7884f7b847033d47f3b30e81297bf99d97aa43bdc4b281cd3c12fe",
+        "uploaded_at": "2026-05-26T23:06:43.736Z"
+      },
+      "uk-vat-mtd": {
+        "skill_id": "skill_01PN55sDSEjQhK9dXqCyUju4",
+        "version": "1779836788894755",
+        "content_hash": "sha256:f0ce6ca371853c5cf1e6ddbaaa03fd1f72cdb1c07d78cae8b4b5a35fb1c271c8",
+        "uploaded_at": "2026-05-26T23:06:46.078Z"
+      },
+      "uk-vat-standard-scheme": {
+        "skill_id": "skill_01M9mNGywja5eB6qHASuqEtg",
+        "version": "1779836789800400",
+        "content_hash": "sha256:413fb9fff1b123d0e18a8e426d17d66e373a51a50b9feab2068c1c1a2f29a348",
+        "uploaded_at": "2026-05-26T23:06:47.046Z"
+      },
+      "use-of-home-allowance": {
+        "skill_id": "skill_01E1ZqN4FCGh8Mdhxj2WTm8U",
+        "version": "1779836790741558",
+        "content_hash": "sha256:31457e494b79ee6af6e00e8a73276a1975c69acb651636613bc1917491708489",
+        "uploaded_at": "2026-05-26T23:06:47.912Z"
       }
     }
   }

@@ -33,9 +33,22 @@ const REPO_ROOT = join(__dirname, "..", "..");
 
 const CONFIG = {
   environmentId: "env_0179oKijtUsLa84wXBRvSfdG",
+  // Synced from skills-for-anthropic/skills.lock.json — re-run
+  // scripts/anthropic/sync-skills.mjs whenever you add or change a skill,
+  // then paste the printed customSkills block here.
   customSkills: [
     { skill_id: "skill_01NL2jQZdKLFGZgSENShHQek", note: "uk-vat-flat-rate" },
-    // Add more skill IDs here as you upload them to the Anthropic Console.
+    { skill_id: "skill_01AoqWSUfNhTYTjLjf7YHm3j", note: "allowable-business-expenses" },
+    { skill_id: "skill_01FUYdoskXCJNzxTMU3Ws3Tj", note: "corporation-tax-bands" },
+    { skill_id: "skill_01N9ibHetXqc7STSYgA6PLoE", note: "directors-loan-account" },
+    { skill_id: "skill_01JBy4pabb22HEcrsK5TdJEw", note: "dividend-taxation" },
+    { skill_id: "skill_01GC39JYWVFjgAgYN6iWFG9P", note: "ir35-off-payroll-working" },
+    { skill_id: "skill_01W15gEPDFYrUU1YLnPuXWT2", note: "mileage-and-vehicle-expenses" },
+    { skill_id: "skill_01J8wjVksMXcBqSpzusH7Tp6", note: "payments-on-account" },
+    { skill_id: "skill_019RgEnvnzoKSbZ1jhEkd5Fu", note: "self-assessment-deadlines" },
+    { skill_id: "skill_01PN55sDSEjQhK9dXqCyUju4", note: "uk-vat-mtd" },
+    { skill_id: "skill_01M9mNGywja5eB6qHASuqEtg", note: "uk-vat-standard-scheme" },
+    { skill_id: "skill_01E1ZqN4FCGh8Mdhxj2WTm8U", note: "use-of-home-allowance" },
   ],
   betaHeader: "managed-agents-2026-04-01",
   apiBase: "https://api.anthropic.com",
