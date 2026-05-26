@@ -34,9 +34,14 @@ export function ErrorBoundary({
         </div>
         <h2 className="mt-4 text-base font-semibold">{title}</h2>
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
-        {process.env.NODE_ENV === "development" && error?.message && (
+        {error?.message && (
           <pre className="mt-4 max-h-40 overflow-auto rounded-md bg-muted p-3 text-left text-xs text-muted-foreground">
             {error.message}
+            {error.digest && (
+              <span className="block mt-2 opacity-60">
+                digest: {error.digest}
+              </span>
+            )}
           </pre>
         )}
         <div className="mt-6 flex items-center justify-center gap-2">
