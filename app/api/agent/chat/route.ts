@@ -19,6 +19,7 @@ import {
 } from "@/lib/anthropic/context";
 import {
   PAID_PLAN_MONTHLY_LIMIT,
+  checkAndRecordRateLimit,
   getMonthlyTokenSummary,
   getMonthlyUsage,
   incrementMonthlyUsage,
@@ -201,6 +202,23 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   const userRef = adminDb.collection("users").doc(session.uid);
+
+  // Per-minute rate limit (sliding 60s window). Cheap to check; protects
+  // against scripted burn-through of the monthly quotas.
+  const rate = await checkAndRecordRateLimit(session.uid, "chat");
+  if (!rate.allowed) {
+    return NextResponse.json(
+      {
+        error: `Slow down — you've sent ${rate.count} messages in the last minute. Try again in ${rate.retryAfterSeconds}s.`,
+        code: "too_many_requests",
+        retryAfterSeconds: rate.retryAfterSeconds,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rate.retryAfterSeconds) },
+      }
+    );
+  }
 
   // 0. Quota checks — fail fast before any Anthropic spend.
   // Two independent gates: monthly message count, and monthly token budget.

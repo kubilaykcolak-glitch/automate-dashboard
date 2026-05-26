@@ -11,6 +11,7 @@ import {
 } from "@/lib/anthropic/context";
 import {
   PAID_PLAN_MONTHLY_LIMIT,
+  checkAndRecordRateLimit,
   getMonthlyRichUsage,
   getMonthlyTokenSummary,
   getMonthlyUsage,
@@ -211,6 +212,23 @@ export async function POST(request: NextRequest): Promise<Response> {
         code: "message_too_long",
       },
       { status: 413 }
+    );
+  }
+
+  // Per-minute rate limit (shared 60s window across both chat routes).
+  // Rich is much pricier so the same cap matters more here.
+  const rate = await checkAndRecordRateLimit(session.uid, "chat");
+  if (!rate.allowed) {
+    return NextResponse.json(
+      {
+        error: `Slow down — you've sent ${rate.count} messages in the last minute. Try again in ${rate.retryAfterSeconds}s.`,
+        code: "too_many_requests",
+        retryAfterSeconds: rate.retryAfterSeconds,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rate.retryAfterSeconds) },
+      }
     );
   }
 

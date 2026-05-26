@@ -236,3 +236,88 @@ export async function recordRichTurn(uid: string): Promise<void> {
     { merge: true }
   );
 }
+
+/**
+ * Per-minute rate limit. Sliding 60-second window, counter stored at
+ * /users/{uid}/rateLimits/chat. Returns the verdict and (if exceeded) how
+ * many seconds the caller should wait. Implementation note: a Firestore
+ * transaction is the right shape for read-then-write atomicity, but we
+ * use a single set+increment with manual window detection — slightly less
+ * precise under concurrent bursts but adequate for cost protection and
+ * avoids transaction round-trips on the hot path.
+ */
+export const RATE_LIMIT_WINDOW_SECONDS = 60;
+export const RATE_LIMIT_MAX_REQUESTS = 10;
+
+export interface RateLimitVerdict {
+  allowed: boolean;
+  retryAfterSeconds: number;
+  /** Tokens used this window (after the current request, if allowed). */
+  count: number;
+  limit: number;
+}
+
+export async function checkAndRecordRateLimit(
+  uid: string,
+  bucket: string = "chat"
+): Promise<RateLimitVerdict> {
+  const ref = adminDb
+    .collection("users")
+    .doc(uid)
+    .collection("rateLimits")
+    .doc(bucket);
+  const now = Date.now();
+
+  // Transaction keeps the read-modify-write atomic across concurrent
+  // requests from the same user. Cheap because the doc is tiny.
+  return adminDb.runTransaction<RateLimitVerdict>(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.exists ? (snap.data() ?? {}) : {};
+    const windowStartMs =
+      typeof data.windowStartMs === "number" ? data.windowStartMs : 0;
+    const count = typeof data.count === "number" ? data.count : 0;
+    const elapsed = now - windowStartMs;
+
+    if (!snap.exists || elapsed >= RATE_LIMIT_WINDOW_SECONDS * 1000) {
+      // Window expired (or first request) — start a fresh window with 1 token.
+      tx.set(
+        ref,
+        {
+          windowStartMs: now,
+          count: 1,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: false }
+      );
+      return {
+        allowed: true,
+        retryAfterSeconds: 0,
+        count: 1,
+        limit: RATE_LIMIT_MAX_REQUESTS,
+      };
+    }
+
+    if (count >= RATE_LIMIT_MAX_REQUESTS) {
+      // Window still open and at cap — reject.
+      const remainingMs = RATE_LIMIT_WINDOW_SECONDS * 1000 - elapsed;
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+        count,
+        limit: RATE_LIMIT_MAX_REQUESTS,
+      };
+    }
+
+    // Window open and under cap — increment.
+    tx.update(ref, {
+      count: FieldValue.increment(1),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return {
+      allowed: true,
+      retryAfterSeconds: 0,
+      count: count + 1,
+      limit: RATE_LIMIT_MAX_REQUESTS,
+    };
+  });
+}
