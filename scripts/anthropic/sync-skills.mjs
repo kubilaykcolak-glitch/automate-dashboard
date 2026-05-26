@@ -197,7 +197,12 @@ async function anthropic(path, options = {}) {
   if (options.body !== undefined && !(options.body instanceof FormData)) {
     headers["content-type"] = "application/json";
   }
-  const res = await fetch(`${CONFIG.apiBase}${path}`, {
+  // The Skills API requires both the anthropic-beta header AND a ?beta=true
+  // query parameter — the SDK reference at api.md shows it as
+  // `POST /v1/skills?beta=true`. Append automatically if not already present.
+  const url = new URL(`${CONFIG.apiBase}${path}`);
+  if (!url.searchParams.has("beta")) url.searchParams.set("beta", "true");
+  const res = await fetch(url.toString(), {
     method: options.method ?? "GET",
     headers,
     body:
