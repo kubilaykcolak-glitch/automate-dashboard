@@ -17,7 +17,15 @@ import type {
 } from "./types";
 
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
-export const DEFAULT_MAX_TOKENS = 2000;
+/**
+ * Output ceiling per turn. Big enough to fit large CSV / XLSX tool calls
+ * (each row consumes output tokens as the model emits the tool_use JSON)
+ * and long-form report PDFs. 2,000 was too tight — the model started
+ * compressing cell text to stay within budget. 8,000 is comfortable for
+ * 200-300 row exports and multi-page narrative reports; only billed for
+ * tokens actually output.
+ */
+export const DEFAULT_MAX_TOKENS = 8000;
 
 /**
  * Controls how much Claude reasons before responding.
