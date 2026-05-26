@@ -73,7 +73,7 @@ function loadDotEnvLocal() {
     ) {
       value = value.slice(1, -1);
     }
-    if (!(key in process.env)) process.env[key] = value;
+    if (!process.env[key]) process.env[key] = value;
   }
 }
 

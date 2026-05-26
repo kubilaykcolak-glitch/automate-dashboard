@@ -36,21 +36,43 @@ The assistant message stores `mode: "quick" | "rich"` so the UI can render a sma
 1. **Session output retrieval.** The agent generates its real `.xlsx` in the hosted environment at `/mnt/session/outputs/<filename>`. We don't yet have an API call to fetch those bytes back. Until then, `create_export` builds a placeholder PDF/file using the `summary`/`markdown` field on the tool input and serves *that* — useful as proof of concept, not as the real deliverable. Wire the session-output fetch next.
 2. **Memory store writes.** Memory store created and attached per session, but we never write to it; profile still inlined into the user message. Find the memory-write API (or do a "seed" session that writes via bash) and migrate per-user profile in.
 3. **Operations + General Managed Agents.** Bootstrap script supports only accountancy. Adding the other two is the same script duplicated with their own system prompts. Wait until accountancy is proven.
-4. **Bulk skill upload automation.** Each remaining accountancy skill currently needs UI upload. When we cross ~5 unsynced skills, build a `sync-skills.mjs` script using the Skills API.
-5. **True token-level streaming.** Managed Agents emits whole `agent.message` blocks, not character deltas. UX shows messages in paragraph-sized chunks instead of typewriter style. Acceptable for now; we could fake-stream client-side if it bothers users.
+4. **True token-level streaming.** Managed Agents emits whole `agent.message` blocks, not character deltas. UX shows messages in paragraph-sized chunks instead of typewriter style. Acceptable for now; we could fake-stream client-side if it bothers users.
 
 ## Bootstrap procedure
 
-1. Upload accountancy skills to the Anthropic Console Skills tab (one click per skill; existing markdown files at `lib/anthropic/skills/accountancy/*.md` work — wrap each into a folder with `SKILL.md` per the example at `skills-for-anthropic/uk-vat-flat-rate/`).
-2. Note each skill ID. Add to `CONFIG.customSkills` in `scripts/anthropic/bootstrap-accountancy-agent.mjs`.
-3. Run:
+1. **Sync skills to Anthropic** (automated):
+   ```powershell
+   node scripts/anthropic/sync-skills.mjs --dry-run    # preview what will happen
+   node scripts/anthropic/sync-skills.mjs              # actually upload
+   ```
+   Scans `lib/anthropic/skills/<agent>/*.md`, packages each as a SKILL.md, uploads via `POST /v1/skills`, and tracks results in `skills-for-anthropic/skills.lock.json`. Re-runs are idempotent: unchanged skills are skipped (content-hash comparison), changed skills get a new version via `POST /v1/skills/{skill_id}/versions`. On completion it prints a ready-to-paste `customSkills` array for the bootstrap script.
+2. Paste the printed config into `CONFIG.customSkills` in `scripts/anthropic/bootstrap-accountancy-agent.mjs`.
+3. Run the bootstrap to create the production Managed Agent with all skills attached:
    ```powershell
    node scripts/anthropic/bootstrap-accountancy-agent.mjs
    ```
 4. Copy the printed `ANTHROPIC_AGENT_ID_ACCOUNTANCY` and `ANTHROPIC_ENVIRONMENT_ID` into `.env.local` AND Vercel env.
 5. Restart dev / redeploy.
 
-Re-run the bootstrap whenever you change the agent's system prompt or add a skill that needs to be in the registered list. The script creates a fresh agent each time — old ones can be left orphaned or deleted in the console.
+Re-run the bootstrap whenever you change the agent's system prompt or sync new skills. The script creates a fresh agent each time — old ones can be left orphaned or deleted in the console. The lock file `skills-for-anthropic/skills.lock.json` is checked into git so the next session knows which skills are already uploaded.
+
+### Iteration workflow once you have a working setup
+
+When you edit a skill's markdown:
+
+```powershell
+node scripts/anthropic/sync-skills.mjs      # uploads only changed skills (new versions)
+# No need to re-run bootstrap — the agent already references "latest" version.
+```
+
+When you add a brand-new skill:
+
+```powershell
+node scripts/anthropic/sync-skills.mjs                  # creates it, prints new customSkills list
+# Copy the printed list into bootstrap-accountancy-agent.mjs
+node scripts/anthropic/bootstrap-accountancy-agent.mjs  # creates a new agent that references the new skill
+# Update ANTHROPIC_AGENT_ID_ACCOUNTANCY in .env.local + Vercel
+```
 
 ## Stream wire format mapping
 
