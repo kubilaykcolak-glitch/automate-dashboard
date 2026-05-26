@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Check, Lock } from "lucide-react";
+import { Check, Clock, Hammer } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/components/auth-provider";
 import { subscribeIntegrations } from "@/lib/firebase/integrations";
@@ -43,23 +43,35 @@ const PROVIDER_CARDS: ProviderCard[] = [
   { id: "xero", internalId: "xero", name: "Xero", description: "Sync bookkeeping and reports.", color: "bg-sky-500" },
 ];
 
+type ProviderPhase = "available" | "credentials-pending" | "roadmap";
+
 export default function IntegrationsPage() {
   const { user, loading: authLoading } = useAuth();
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabledMap, setEnabledMap] = useState<Record<string, boolean>>({});
+  const [phaseMap, setPhaseMap] = useState<Record<string, ProviderPhase>>({});
   const searchParams = useSearchParams();
 
-  // Fetch which providers have OAuth credentials configured server-side.
+  // Fetch which providers have OAuth credentials configured server-side,
+  // and what lifecycle phase each card is in (available / credentials-pending
+  // / roadmap) so the UI can show honest copy instead of a generic
+  // "Coming soon".
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch("/api/integrations/status");
         if (!res.ok) return;
-        const data = (await res.json()) as { status: Record<string, boolean> };
-        if (!cancelled) setEnabledMap(data.status ?? {});
+        const data = (await res.json()) as {
+          status: Record<string, boolean>;
+          phases?: Record<string, ProviderPhase>;
+        };
+        if (!cancelled) {
+          setEnabledMap(data.status ?? {});
+          setPhaseMap(data.phases ?? {});
+        }
       } catch {
         // best-effort; everything defaults to disabled which is the safe state
       }
@@ -141,6 +153,8 @@ export default function IntegrationsPage() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {PROVIDER_CARDS.map((card) => {
             const enabled = enabledMap[card.id] ?? false;
+            const phase: ProviderPhase =
+              phaseMap[card.id] ?? (enabled ? "available" : "roadmap");
             const integration = statusByInternalId.get(card.internalId);
             const isConnected = enabled && integration?.status === "connected";
             const pending = pendingId === card.id;
@@ -156,18 +170,30 @@ export default function IntegrationsPage() {
                         <CardTitle className="text-base">{card.name}</CardTitle>
                       </div>
                     </div>
-                    {isConnected && (
+                    {isConnected ? (
                       <Badge className="gap-1 bg-emerald-600 text-white hover:bg-emerald-600">
                         <Check className="h-3 w-3" />
                         Connected
                       </Badge>
-                    )}
-                    {!enabled && (
-                      <Badge variant="secondary" className="gap-1">
-                        <Lock className="h-3 w-3" />
+                    ) : phase === "credentials-pending" ? (
+                      <Badge
+                        variant="secondary"
+                        className="gap-1 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                        title="OAuth code is ready. Awaiting admin to configure credentials in env vars."
+                      >
+                        <Clock className="h-3 w-3" />
                         Coming soon
                       </Badge>
-                    )}
+                    ) : phase === "roadmap" ? (
+                      <Badge
+                        variant="secondary"
+                        className="gap-1"
+                        title="On the roadmap — integration work hasn't started yet."
+                      >
+                        <Hammer className="h-3 w-3" />
+                        Roadmap
+                      </Badge>
+                    ) : null}
                   </div>
                   <CardDescription className="pt-2">
                     {card.description}
@@ -180,11 +206,25 @@ export default function IntegrationsPage() {
                       {integration.scopes.length === 1 ? "" : "s"} granted
                     </div>
                   )}
+                  {!enabled && phase === "credentials-pending" && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Implementation is ready — waiting on OAuth credentials
+                      to be configured on the server.
+                    </p>
+                  )}
+                  {!enabled && phase === "roadmap" && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Planned. We&apos;ll prioritise this based on demand —
+                      let us know if you&apos;d use it.
+                    </p>
+                  )}
                 </CardContent>
                 <CardFooter>
                   {!enabled ? (
                     <Button variant="outline" className="w-full" disabled>
-                      Coming soon
+                      {phase === "credentials-pending"
+                        ? "Connect (admin setup pending)"
+                        : "On the roadmap"}
                     </Button>
                   ) : isConnected ? (
                     <Button

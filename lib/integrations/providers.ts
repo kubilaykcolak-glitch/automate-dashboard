@@ -7,6 +7,20 @@
  * server-side flow (e.g., showing 'Coming soon' for providers we haven't wired).
  */
 
+/**
+ * Lifecycle phase of an integration card. Drives the UI badge + CTA:
+ *  - 'available'           — OAuth code wired + credentials present in env;
+ *                            user can click Connect.
+ *  - 'credentials-pending' — OAuth code wired, env vars absent. Admin can
+ *                            enable in minutes by setting the right env vars.
+ *  - 'roadmap'             — No OAuth code yet. Genuine engineering work
+ *                            required before this becomes available.
+ *
+ * Used to surface honest copy on /dashboard/integrations so the user can
+ * tell what's truly coming soon vs what's only blocked on configuration.
+ */
+export type ProviderPhase = "available" | "credentials-pending" | "roadmap";
+
 export interface ProviderConfig {
   id: string;
   /** Internal canonical ID used in storage paths. Several UI cards can map to
@@ -16,7 +30,13 @@ export interface ProviderConfig {
   description: string;
   /** Tailwind class for the avatar background colour. */
   color: string;
+  /**
+   * True when OAuth credentials are available right now. False otherwise —
+   * could be either `credentials-pending` or `roadmap` (use `phase` to tell).
+   */
   enabled: boolean;
+  /** See ProviderPhase. */
+  phase: ProviderPhase;
   /** Server-side: missing if `enabled` is false. */
   oauth?: OAuthEndpoints;
 }
@@ -77,6 +97,22 @@ function googleConfig(): OAuthEndpoints | undefined {
   };
 }
 
+// Compute phase + enabled in one place so we don't drift between the two.
+function wired(factory: () => OAuthEndpoints | undefined): {
+  enabled: boolean;
+  phase: ProviderPhase;
+  oauth?: OAuthEndpoints;
+} {
+  const oauth = factory();
+  if (oauth) return { enabled: true, phase: "available", oauth };
+  return { enabled: false, phase: "credentials-pending" };
+}
+
+const ROADMAP: { enabled: false; phase: "roadmap" } = {
+  enabled: false,
+  phase: "roadmap",
+};
+
 // UI-facing provider cards. Internal `gmail`, `google-drive`, `google-sheets`
 // all map to the same `google` OAuth grant.
 export const PROVIDER_CARDS: ProviderConfig[] = [
@@ -86,8 +122,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "Gmail",
     description: "Read and search emails programmatically.",
     color: "bg-red-500",
-    enabled: !!googleConfig(),
-    oauth: googleConfig(),
+    ...wired(googleConfig),
   },
   {
     id: "google-sheets",
@@ -95,8 +130,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "Google Sheets",
     description: "Read spreadsheet data.",
     color: "bg-emerald-500",
-    enabled: !!googleConfig(),
-    oauth: googleConfig(),
+    ...wired(googleConfig),
   },
   {
     id: "google-drive",
@@ -104,8 +138,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "Google Drive",
     description: "Read files and folders.",
     color: "bg-amber-500",
-    enabled: !!googleConfig(),
-    oauth: googleConfig(),
+    ...wired(googleConfig),
   },
   {
     id: "slack",
@@ -113,8 +146,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "Slack",
     description: "Post messages and read channels.",
     color: "bg-fuchsia-600",
-    enabled: !!slackConfig(),
-    oauth: slackConfig(),
+    ...wired(slackConfig),
   },
   {
     id: "quickbooks",
@@ -122,7 +154,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "QuickBooks",
     description: "Pull accounting and invoice data.",
     color: "bg-green-700",
-    enabled: false,
+    ...ROADMAP,
   },
   {
     id: "stripe",
@@ -130,7 +162,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "Stripe",
     description: "Sync payments, customers, and subscriptions.",
     color: "bg-indigo-500",
-    enabled: false,
+    ...ROADMAP,
   },
   {
     id: "figma",
@@ -138,7 +170,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "Figma",
     description: "Read design files and components.",
     color: "bg-neutral-800",
-    enabled: false,
+    ...ROADMAP,
   },
   {
     id: "xero",
@@ -146,7 +178,7 @@ export const PROVIDER_CARDS: ProviderConfig[] = [
     name: "Xero",
     description: "Sync bookkeeping and reports.",
     color: "bg-sky-500",
-    enabled: false,
+    ...ROADMAP,
   },
 ];
 
