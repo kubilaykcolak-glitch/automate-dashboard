@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   getMonthlyUsage,
   getMonthlyTokenSummary,
+  getMonthlyRichUsage,
   currentMonthKey,
 } from "@/lib/firebase/usage";
 
@@ -57,9 +58,10 @@ function formatUsd(n: number): string {
  */
 export async function UsageCard({ uid }: UsageCardProps) {
   const month = currentMonthKey();
-  const [usage, tokens] = await Promise.all([
+  const [usage, tokens, rich] = await Promise.all([
     getMonthlyUsage(uid, month),
     getMonthlyTokenSummary(uid, month),
+    getMonthlyRichUsage(uid, month),
   ]);
 
   const tokenPct = tokens.budget
@@ -68,12 +70,18 @@ export async function UsageCard({ uid }: UsageCardProps) {
   const messagePct = usage.limit
     ? Math.min(150, Math.round((usage.count / usage.limit) * 100))
     : 0;
+  const richPct = rich.limit
+    ? Math.min(150, Math.round((rich.used / rich.limit) * 100))
+    : 0;
 
   const overMessages = usage.count >= usage.limit;
   const overTokens = tokens.totalTokens >= tokens.budget;
+  const overRich = rich.limit > 0 && rich.used >= rich.limit;
   const nearMessages = !overMessages && messagePct >= 80;
   const nearTokens = !overTokens && tokenPct >= 80;
-  const showAlert = overMessages || overTokens || nearMessages || nearTokens;
+  const nearRich = !overRich && rich.limit > 0 && richPct >= 80;
+  const showAlert =
+    overMessages || overTokens || overRich || nearMessages || nearTokens || nearRich;
 
   const planLabel =
     tokens.budget === 5_000_000 ? "Pro" : tokens.budget === 500_000 ? "Free" : "Plan";
@@ -128,6 +136,55 @@ export async function UsageCard({ uid }: UsageCardProps) {
             {usage.remaining > 0
               ? `${formatNumber(usage.remaining)} messages remaining this month.`
               : "Monthly message limit reached. New chats are blocked until reset."}
+          </div>
+        </div>
+
+        {/* Rich-mode turns — separate quota because each turn is materially
+            more expensive than a Quick chat turn. */}
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between gap-3">
+            <div className="text-sm font-medium">Rich-mode turns</div>
+            <div className="text-sm tabular-nums text-muted-foreground">
+              {rich.limit === 0 ? (
+                <span className="text-muted-foreground">
+                  Not available on free plan
+                </span>
+              ) : (
+                <>
+                  <span
+                    className={
+                      overRich
+                        ? "font-semibold text-destructive"
+                        : nearRich
+                          ? "font-semibold text-amber-600"
+                          : "font-medium text-foreground"
+                    }
+                  >
+                    {formatNumber(rich.used)}
+                  </span>
+                  <span> / {formatNumber(rich.limit)}</span>
+                </>
+              )}
+            </div>
+          </div>
+          {rich.limit > 0 && (
+            <Progress
+              value={Math.min(100, richPct)}
+              className={
+                overRich
+                  ? "[&>div]:bg-destructive"
+                  : nearRich
+                    ? "[&>div]:bg-amber-500"
+                    : undefined
+              }
+            />
+          )}
+          <div className="text-xs text-muted-foreground">
+            {rich.limit === 0
+              ? "Upgrade to Pro to enable Rich mode (file generation, web search, multi-step agent work)."
+              : overRich
+                ? "Rich-mode quota reached. Quick-mode chats continue to work; contact us for additional Rich capacity."
+                : `${formatNumber(rich.remaining)} Rich turns remaining. Each Rich turn typically costs 5–10× a Quick turn.`}
           </div>
         </div>
 

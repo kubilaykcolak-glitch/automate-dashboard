@@ -15,6 +15,16 @@ export const PAID_PLAN_MONTHLY_LIMIT = 1000;
 export const FREE_PLAN_MONTHLY_TOKEN_BUDGET = 500_000;
 export const PAID_PLAN_MONTHLY_TOKEN_BUDGET = 5_000_000;
 
+/**
+ * Per-month Rich-mode turn quota. Rich mode burns 5-10× the tokens of
+ * Quick per turn, so it gets its own ceiling on top of the message-count
+ * and token-budget gates. Free users get zero (the toggle exists for
+ * discoverability but the API refuses). Paid users get a modest amount
+ * that fits comfortably within their token budget at typical rates.
+ */
+export const FREE_PLAN_MONTHLY_RICH_TURNS = 0;
+export const PAID_PLAN_MONTHLY_RICH_TURNS = 30;
+
 export type Plan = "free" | "paid";
 
 export interface MonthlyUsage {
@@ -180,4 +190,49 @@ export async function getMonthlyTokenSummary(
     budget,
     overageTokens: Math.max(0, total - budget),
   };
+}
+
+/**
+ * Rich-mode turn quota snapshot. Stored on the monthly usage doc as
+ * `richTurns` (incremented by recordRichTurn). Limit derived from the plan.
+ */
+export interface MonthlyRichUsage {
+  month: string;
+  plan: Plan;
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
+export async function getMonthlyRichUsage(
+  uid: string,
+  month: string = currentMonthKey()
+): Promise<MonthlyRichUsage> {
+  const [plan, snap] = await Promise.all([
+    resolvePlan(uid),
+    adminDb.collection("users").doc(uid).collection("usage").doc(month).get(),
+  ]);
+  const used = (snap.data()?.richTurns as number | undefined) ?? 0;
+  const limit =
+    plan === "paid"
+      ? PAID_PLAN_MONTHLY_RICH_TURNS
+      : FREE_PLAN_MONTHLY_RICH_TURNS;
+  return { month, plan, used, limit, remaining: Math.max(0, limit - used) };
+}
+
+/**
+ * Atomically increments the Rich-turn counter for the current month.
+ * Called only by /api/agent/chat-rich after a successful end_turn.
+ */
+export async function recordRichTurn(uid: string): Promise<void> {
+  const month = currentMonthKey();
+  const ref = adminDb.collection("users").doc(uid).collection("usage").doc(month);
+  await ref.set(
+    {
+      month,
+      richTurns: FieldValue.increment(1),
+      lastRichTurnAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }

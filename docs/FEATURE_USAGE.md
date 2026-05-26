@@ -62,6 +62,13 @@ Each assistant message is tagged with which mode produced it. When the agent run
 
 Only the Accountancy agent supports rich mode today. Operations and General fall back to quick mode regardless of the toggle.
 
+**Rich-mode quota.** Rich mode is metered separately from the regular message-count quota:
+- **Free plan**: 0 Rich turns/month — the toggle exists for discoverability but sending a Rich-mode message returns HTTP 402 with an upgrade prompt.
+- **Pro plan**: 30 Rich turns/month. Once exhausted, further Rich-mode sends return HTTP 429; Quick-mode chats continue normally.
+- **Admin**: same quota as Pro (30/month) — not unlimited, since each turn costs real money. Bump `PAID_PLAN_MONTHLY_RICH_TURNS` in `lib/firebase/usage.ts` if you need more.
+
+Quota is incremented only after a Rich turn finishes with `end_turn`. Failed or mid-stream-cancelled turns don't burn quota. Visible in the Usage card on `/dashboard/billing`.
+
 ### Web search
 
 Agents can search the web when they need current information not in their training or skill library. Examples that will trigger a search:

@@ -11,9 +11,11 @@ import {
 } from "@/lib/anthropic/context";
 import {
   PAID_PLAN_MONTHLY_LIMIT,
+  getMonthlyRichUsage,
   getMonthlyTokenSummary,
   getMonthlyUsage,
   incrementMonthlyUsage,
+  recordRichTurn,
   recordTokenUsage,
 } from "@/lib/firebase/usage";
 import { addActivityToBatch, logActivity } from "@/lib/firebase/activity";
@@ -212,13 +214,37 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   }
 
-  // Quota checks — same two gates as the standard route. Rich-mode turns
-  // burn tokens 5-10× faster than Quick, so the token-budget gate matters
-  // more here.
-  const [usage, tokenSummary] = await Promise.all([
+  // Quota checks — three gates run before any Anthropic spend:
+  //   1. Message-count quota (shared with Quick mode)
+  //   2. Token-budget quota (shared with Quick mode)
+  //   3. Rich-turn quota (this route only) — Rich is materially more
+  //      expensive per turn, so it gets its own ceiling.
+  const [usage, tokenSummary, richUsage] = await Promise.all([
     getMonthlyUsage(session.uid),
     getMonthlyTokenSummary(session.uid),
+    getMonthlyRichUsage(session.uid),
   ]);
+  if (richUsage.limit === 0) {
+    return NextResponse.json(
+      {
+        error:
+          "Rich mode isn't available on the free plan. Upgrade to Pro to use file generation, web search, and multi-step agent work.",
+        code: "rich_not_available",
+        richUsage,
+      },
+      { status: 402 } // Payment Required
+    );
+  }
+  if (richUsage.used >= richUsage.limit) {
+    return NextResponse.json(
+      {
+        error: `You've used all ${richUsage.limit} Rich-mode turns on your plan this month. Switch to Quick mode for further conversations, or contact us about additional capacity.`,
+        code: "rich_quota_exceeded",
+        richUsage,
+      },
+      { status: 429 }
+    );
+  }
   if (usage.count >= usage.limit) {
     return NextResponse.json(
       {
@@ -644,6 +670,11 @@ export async function POST(request: NextRequest): Promise<Response> {
 
         // 7. Increment counters and record token usage.
         void incrementMonthlyUsage(session.uid, 1);
+        // Rich-mode turn counter is gated at the top of the route. Increment
+        // only here, after end_turn — failed/mid-stream turns don't burn quota.
+        void recordRichTurn(session.uid).catch((err) => {
+          console.error("[chat-rich] recordRichTurn failed", err);
+        });
         void recordTokenUsage(
           session.uid,
           {
