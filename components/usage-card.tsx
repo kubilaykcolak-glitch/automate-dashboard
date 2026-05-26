@@ -13,6 +13,7 @@ import {
   getMonthlyUsage,
   getMonthlyTokenSummary,
   getMonthlyRichUsage,
+  getMonthlyWebSearchUsage,
   currentMonthKey,
 } from "@/lib/firebase/usage";
 
@@ -58,10 +59,11 @@ function formatUsd(n: number): string {
  */
 export async function UsageCard({ uid }: UsageCardProps) {
   const month = currentMonthKey();
-  const [usage, tokens, rich] = await Promise.all([
+  const [usage, tokens, rich, webSearch] = await Promise.all([
     getMonthlyUsage(uid, month),
     getMonthlyTokenSummary(uid, month),
     getMonthlyRichUsage(uid, month),
+    getMonthlyWebSearchUsage(uid, month),
   ]);
 
   const tokenPct = tokens.budget
@@ -218,7 +220,17 @@ export async function UsageCard({ uid }: UsageCardProps) {
             }
           />
           <div className="text-xs text-muted-foreground">
-            Total cost this month: {formatUsd(tokens.totalCostUsd)}.
+            Total cost this month: {formatUsd(tokens.totalCostUsd + webSearch.costUsd)}
+            {webSearch.count > 0 && (
+              <>
+                {" "}
+                <span className="text-muted-foreground/80">
+                  (incl. {formatNumber(webSearch.count)} web search
+                  {webSearch.count === 1 ? "" : "es"} ≈ {formatUsd(webSearch.costUsd)})
+                </span>
+              </>
+            )}
+            {"."}
             {tokens.overageTokens > 0 && (
               <>
                 {" "}

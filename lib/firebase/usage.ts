@@ -238,6 +238,65 @@ export async function recordRichTurn(uid: string): Promise<void> {
 }
 
 /**
+ * Anthropic web_search pricing — $10 per 1,000 invocations at time of
+ * writing. Single source of truth for the cost line on the Usage card.
+ * Verify quarterly against https://www.anthropic.com/pricing#anthropic-api.
+ */
+export const WEB_SEARCH_USD_PER_CALL = 0.01;
+
+/**
+ * Per-month web_search invocation snapshot. Stored as `webSearches` on
+ * the monthly usage doc and incremented by recordWebSearches() at the
+ * end of each chat turn that triggered any searches.
+ */
+export interface MonthlyWebSearchUsage {
+  month: string;
+  count: number;
+  costUsd: number;
+}
+
+export async function getMonthlyWebSearchUsage(
+  uid: string,
+  month: string = currentMonthKey()
+): Promise<MonthlyWebSearchUsage> {
+  const snap = await adminDb
+    .collection("users")
+    .doc(uid)
+    .collection("usage")
+    .doc(month)
+    .get();
+  const count = (snap.data()?.webSearches as number | undefined) ?? 0;
+  return { month, count, costUsd: count * WEB_SEARCH_USD_PER_CALL };
+}
+
+/**
+ * Atomically increments the web-search counter by the number of searches
+ * that fired in a single chat turn. Called fire-and-forget after each
+ * successful end_turn.
+ */
+export async function recordWebSearches(
+  uid: string,
+  count: number
+): Promise<void> {
+  if (count <= 0) return;
+  const month = currentMonthKey();
+  const ref = adminDb
+    .collection("users")
+    .doc(uid)
+    .collection("usage")
+    .doc(month);
+  await ref.set(
+    {
+      month,
+      webSearches: FieldValue.increment(count),
+      webSearchCostUsd: FieldValue.increment(count * WEB_SEARCH_USD_PER_CALL),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
  * Per-minute rate limit. Sliding 60-second window, counter stored at
  * /users/{uid}/rateLimits/chat. Returns the verdict and (if exceeded) how
  * many seconds the caller should wait. Implementation note: a Firestore

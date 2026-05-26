@@ -24,6 +24,7 @@ import {
   getMonthlyUsage,
   incrementMonthlyUsage,
   recordTokenUsage,
+  recordWebSearches,
 } from "@/lib/firebase/usage";
 import { addActivityToBatch, logActivity } from "@/lib/firebase/activity";
 import { buildSkillManifest, getSkillBody } from "@/lib/anthropic/skills";
@@ -405,6 +406,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   let cacheReadInputTokens = 0;
   let cacheCreationInputTokens = 0;
   let stopReason: string | null = null;
+  let webSearches = 0;
   const skillsUsed: string[] = [];
   // Exports generated this turn. Pushed into the assistant message doc and
   // streamed to the client as Vercel data-stream `2:` events so the chat UI
@@ -586,6 +588,15 @@ export async function POST(request: NextRequest): Promise<Response> {
                   name: blk.name,
                   partialJson: "",
                 };
+              } else if (
+                // Server-side tool use (Anthropic-executed). Today this is
+                // web_search; count it against the per-month search counter
+                // for billing visibility. Anthropic bills $10 per 1,000 of
+                // these on top of token costs.
+                (blk as { type?: string }).type === "server_tool_use" &&
+                (blk as { name?: string }).name === "web_search"
+              ) {
+                webSearches += 1;
               }
             } else if (event.type === "content_block_delta") {
               const blk = blocks[event.index];
@@ -911,6 +922,13 @@ export async function POST(request: NextRequest): Promise<Response> {
         ).catch((err) => {
           console.error("[chat] recordTokenUsage failed", err);
         });
+        // Anthropic's web_search is billed separately ($10/1000 calls).
+        // Tracked in its own counter so the Usage card shows true cost.
+        if (webSearches > 0) {
+          void recordWebSearches(session.uid, webSearches).catch((err) => {
+            console.error("[chat] recordWebSearches failed", err);
+          });
+        }
         controller.close();
       } catch (err) {
         const errorMessage =
