@@ -51,7 +51,8 @@
 | `/api/stripe/create-checkout` | POST | session | Returns `{url}` of Stripe Checkout for `STRIPE_PRICE_ID` |
 | `/api/stripe/create-portal` | POST | session | Returns Customer Portal URL (needs `stripeCustomerId`) |
 | `/api/stripe/webhook` | POST | Stripe signature | Handles `checkout.session.completed` / `subscription.updated|deleted` → writes Firestore |
-| `/api/agent/chat` | POST | session + rate limit | Streams Anthropic response in Vercel AI SDK data-stream format |
+| `/api/agent/chat` | POST | session + rate limit | Streams Anthropic `messages.create` (Quick mode) in Vercel AI SDK data-stream format |
+| `/api/agent/chat-rich` | POST | session + rate limit | Streams Anthropic Managed Agents (Rich mode) — same wire format. Returns 503 if `ANTHROPIC_AGENT_ID_<TYPE>` or `ANTHROPIC_ENVIRONMENT_ID` is unset. |
 | `/api/agent/sessions` | GET | session | `?agentId=...` → list of sessions ordered by updatedAt desc |
 | `/api/agent/sessions/[sessionId]` | GET, DELETE | session | Get messages / recursive delete |
 | `/api/integrations/[internalId]/connect` | GET | session | Generates state cookie, redirects to provider auth URL |
@@ -90,6 +91,15 @@ SLACK_CLIENT_ID / SLACK_CLIENT_SECRET
 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 ```
 
+### Managed Agents (Rich mode) — required for `/api/agent/chat-rich`
+
+```
+ANTHROPIC_ENVIRONMENT_ID         env_... — created once in the Anthropic console
+ANTHROPIC_AGENT_ID_ACCOUNTANCY   agent_... — created by scripts/anthropic/bootstrap-accountancy-agent.mjs
+```
+
+Absence makes the rich route return 503; the Quick mode chat (`/api/agent/chat`) is unaffected. Operations and General agents will need their own `ANTHROPIC_AGENT_ID_<TYPE>` vars once provisioned.
+
 ### Access control / dev escape hatches
 
 ```
@@ -112,8 +122,8 @@ All paths rooted at `/users/{uid}/`. See `firestore.rules` for the deployed rule
 | `/users/{uid}` | `UserProfile` (`uid, email, fullName, avatarUrl, stripeCustomerId, stripeSubscriptionId, subscriptionStatus, createdAt`) + `automationsRunCount?`, `messageCount?`, `lastMessageAt?` | Signup page (client), Stripe webhook (admin), settings page |
 | `/users/{uid}/usage/{YYYY-MM}` | `{count, updatedAt, month}` | `incrementMonthlyUsage()` (admin) called by chat route on success |
 | `/users/{uid}/agents/{type}` | `Agent` (`id="type", name, type, status, description, connectedTools, createdAt, messageCount, lastMessageAt, customSystemPrompt, profile`) | `activateAgentFromConfig`, `updateAgentStatus`, `updateAgentSettings`, `updateAgentProfile` (all client) + chat route increments counters |
-| `/users/{uid}/agentSessions/{sessionId}` | `{agentId, status, createdAt, updatedAt, lastMessageAt, lastSessionId, lastMessagePreview}` | Chat route (admin) |
-| `/users/{uid}/agentSessions/{sid}/messages/{msgId}` | `{role, content, createdAt, stopReason?, model?, usage?, skillsUsed?, exports?}` | Chat route batched commit. `skillsUsed` is the kebab-case names of skills the agent loaded this turn via the `read_skill` tool (empty when none). `exports` is the array of files the agent generated via `create_export` ({filename, format, size, downloadUrl, title}). |
+| `/users/{uid}/agentSessions/{sessionId}` | `{agentId, status, createdAt, updatedAt, lastMessageAt, lastSessionId, lastMessagePreview, mode?}` | Chat route (admin). `mode` is "rich" for sessions created via `/api/agent/chat-rich`, "quick" otherwise. |
+| `/users/{uid}/agentSessions/{sid}/messages/{msgId}` | `{role, content, createdAt, stopReason?, model?, usage?, skillsUsed?, exports?, mode?, timeline?, managedAgentSessionId?}` | Chat route batched commit. `skillsUsed` is the kebab-case names of skills the agent loaded this turn (empty when none). `exports` is the array of files generated via `create_export`. `mode` is "quick" or "rich". `timeline` (rich only) is the agent's thinking + tool-use trace shown in the chat UI. `managedAgentSessionId` (rich only) is the Anthropic-side session id for debugging. |
 | `/users/{uid}/integrations/{providerInternalId}` | `Integration` (`id, provider, status, connectedAt, scopes, accountLabel?`) — **client-readable, no tokens** | `connectIntegration`/`disconnectIntegration` (client) + OAuth callback (admin) |
 | `/users/{uid}/integration_tokens/{providerInternalId}` | `{accessTokenCiphertext, refreshTokenCiphertext, expiresAt, updatedAt}` — **denied to client** | `saveIntegration` (admin) |
 | `/users/{uid}/files/{filenameEncoded}` | `StoredFile` (`id, name, size, type, storagePath, downloadUrl, createdAt`) | `uploadFile` (client) |
@@ -399,5 +409,6 @@ These live alongside this map and each owns a slice of the system:
 - `docs/TOKEN_BILLING.md` — token + USD tracking, plan budgets, the path to Stripe metered overage. Update when `pricing.ts` rates change or when the overage billing path advances.
 - `docs/FEATURE_USAGE.md` — end-user-facing behaviour of every feature. Update when a route or page changes user-visible behaviour. This becomes the source for the future public docs page.
 - `docs/FILE_RECOMMENDATIONS.md` — per-agent guidance on what files to upload and how to structure them. Update when file support, agent capability, or upload limits change.
+- `docs/MANAGED_AGENTS.md` — Rich-mode architecture, bootstrap procedure, stream-format mapping, deferred work, failure modes. Update when chat-rich or the bootstrap script changes, or when deferred items get implemented.
 - `docs/HANDOFF.md` — context for a new session of Claude picking up work. Update when project state shifts meaningfully (new bypass, new deployment fact, new "what works / doesn't" line).
 - `docs/INTEGRATIONS_BACKLOG.md` — OAuth registration checklist per provider.

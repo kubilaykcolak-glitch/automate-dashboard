@@ -13,6 +13,12 @@ interface MessageExportItem {
   title: string | null;
 }
 
+interface TimelineItem {
+  type: "thinking" | "tool_use" | "tool_done" | "custom_tool_use";
+  name?: string | null;
+  text?: string | null;
+}
+
 interface MessageItem {
   id: string;
   role: "user" | "assistant";
@@ -20,6 +26,8 @@ interface MessageItem {
   createdAt: string | null;
   exports?: MessageExportItem[];
   skillsUsed?: string[];
+  mode?: "quick" | "rich";
+  timeline?: TimelineItem[];
 }
 
 function tsToIso(t: unknown): string | null {
@@ -69,6 +77,8 @@ export async function GET(
       createdAt?: Timestamp;
       exports?: MessageExportItem[];
       skillsUsed?: string[];
+      mode?: "quick" | "rich";
+      timeline?: TimelineItem[];
     };
     return {
       id: d.id,
@@ -77,6 +87,8 @@ export async function GET(
       createdAt: tsToIso(m.createdAt),
       exports: Array.isArray(m.exports) ? m.exports : [],
       skillsUsed: Array.isArray(m.skillsUsed) ? m.skillsUsed : [],
+      mode: m.mode === "rich" ? "rich" : m.mode === "quick" ? "quick" : undefined,
+      timeline: Array.isArray(m.timeline) ? m.timeline : undefined,
     };
   });
 

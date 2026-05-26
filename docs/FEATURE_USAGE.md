@@ -49,6 +49,19 @@ First time you open an active agent, a wizard runs through that agent's profile 
 - Per-message rate limit: 100 messages/month free, 1000 messages/month paid (or admin).
 - Token usage is recorded against the user's monthly budget. See `docs/TOKEN_BILLING.md`.
 
+### Quick mode vs Rich mode
+
+The chat composer has a **Rich** toggle next to the paperclip icon. Off by default.
+
+| Mode | What it does | When to use it | Trade-off |
+|---|---|---|---|
+| **Quick** (default) | Standard chat — agent answers from training + your profile + attached files + skill library. Token-by-token streaming. | Conversational questions, categorisation help, quick lookups, "what's flat-rate VAT?" | Cheap (~$0.01–0.05 per turn). Fast. Limited to what the model can answer from text alone. |
+| **Rich** (click "Rich" to enable) | Agent runs in an Anthropic-hosted sandbox with bash, Python, file generation, web search. Can actually compute, build a real xlsx with formulas, save and surface files. | "Build me a Q1 VAT return spreadsheet", "compute my year's net profit and produce a P&L PDF", anything that needs real file generation or multi-step work. | ~5–10× the per-turn cost. Slower (30s–3min). Better deliverables. |
+
+Each assistant message is tagged with which mode produced it. When the agent runs in rich mode you'll see a small collapsible "Agent runs" timeline above the response showing what it did (thinking steps + tool calls). Click the header to expand or collapse.
+
+Only the Accountancy agent supports rich mode today. Operations and General fall back to quick mode regardless of the toggle.
+
 ### Web search
 
 Agents can search the web when they need current information not in their training or skill library. Examples that will trigger a search:

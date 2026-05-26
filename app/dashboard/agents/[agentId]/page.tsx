@@ -56,6 +56,14 @@ export interface ChatMessageExport {
   title: string | null;
 }
 
+/** Rich-mode timeline entries — agent's thinking + tool usage shown inline. */
+export interface ChatTimelineEntry {
+  type: "thinking" | "tool_use" | "tool_done" | "custom_tool_use";
+  name?: string | null;
+  text?: string | null;
+  input?: Record<string, unknown>;
+}
+
 interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "error";
@@ -65,6 +73,10 @@ interface ChatMessage {
   retryText?: string;
   /** Downloadable files the agent generated for this turn. */
   exports?: ChatMessageExport[];
+  /** Which runtime produced this turn. Rich = Managed Agents; quick = messages.create. */
+  mode?: "quick" | "rich";
+  /** Agent thinking + tool-use timeline (rich mode only). */
+  timeline?: ChatTimelineEntry[];
 }
 
 interface SessionListItem {
@@ -107,6 +119,12 @@ export default function AgentChatPage() {
   const [attachedFileIds, setAttachedFileIds] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSelection, setPickerSelection] = useState<Set<string>>(new Set());
+  /**
+   * Quick vs Rich mode. Quick (default) uses /api/agent/chat — fast, cheap,
+   * token-by-token streaming. Rich uses /api/agent/chat-rich — Managed Agents
+   * with real Python/bash, file generation, ~5-10× the cost per turn.
+   */
+  const [richMode, setRichMode] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -224,6 +242,8 @@ export default function AgentChatPage() {
           role: "user" | "assistant";
           content: string;
           exports?: ChatMessageExport[];
+          mode?: "quick" | "rich";
+          timeline?: ChatTimelineEntry[];
         }[];
       };
       setSessionId(targetSessionId);
@@ -231,6 +251,8 @@ export default function AgentChatPage() {
         data.messages.map((m) => ({
           ...m,
           exports: Array.isArray(m.exports) ? m.exports : [],
+          mode: m.mode,
+          timeline: Array.isArray(m.timeline) ? m.timeline : undefined,
         }))
       );
     } catch (e) {
@@ -263,6 +285,8 @@ export default function AgentChatPage() {
         role: "assistant",
         content: "",
         streaming: true,
+        mode: richMode ? "rich" : "quick",
+        timeline: richMode ? [] : undefined,
       };
 
       setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
@@ -272,7 +296,10 @@ export default function AgentChatPage() {
       setStreaming(true);
 
       try {
-        const res = await fetch("/api/agent/chat", {
+        const endpoint = richMode
+          ? "/api/agent/chat-rich"
+          : "/api/agent/chat";
+        const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -345,34 +372,59 @@ export default function AgentChatPage() {
               }
             } else if (code === "2") {
               // Vercel AI SDK "data" event — arbitrary structured payload.
-              // We use this for export download cards generated mid-stream
-              // by the create_export tool. Each entry has the shape
-              // { type: "export", export: ChatMessageExport }.
+              // Shapes we handle:
+              //   { type: "export", export: ChatMessageExport }      — download card
+              //   { type: "agent_tool_use", name, input }            — rich mode timeline
+              //   { type: "agent_tool_done" }                        — rich mode timeline
+              //   { type: "agent_thinking", text }                   — rich mode timeline
               try {
                 const items = JSON.parse(payload) as unknown;
                 if (!Array.isArray(items)) continue;
                 const newExports: ChatMessageExport[] = [];
+                const newTimeline: ChatTimelineEntry[] = [];
                 for (const item of items) {
-                  if (
-                    item &&
-                    typeof item === "object" &&
-                    (item as { type?: unknown }).type === "export"
-                  ) {
-                    const exp = (item as { export?: ChatMessageExport })
-                      .export;
+                  if (!item || typeof item !== "object") continue;
+                  const t = (item as { type?: unknown }).type;
+                  if (t === "export") {
+                    const exp = (item as { export?: ChatMessageExport }).export;
                     if (exp && typeof exp.filename === "string") {
                       newExports.push(exp);
                     }
+                  } else if (t === "agent_tool_use") {
+                    const obj = item as {
+                      name?: string;
+                      input?: Record<string, unknown>;
+                    };
+                    newTimeline.push({
+                      type: "tool_use",
+                      name: obj.name ?? null,
+                      input: obj.input,
+                    });
+                  } else if (t === "agent_tool_done") {
+                    newTimeline.push({ type: "tool_done" });
+                  } else if (t === "agent_thinking") {
+                    const obj = item as { text?: string };
+                    newTimeline.push({
+                      type: "thinking",
+                      text: obj.text ?? null,
+                    });
                   }
                 }
-                if (newExports.length > 0) {
+                if (newExports.length > 0 || newTimeline.length > 0) {
                   setMessages((prev) => {
                     const next = [...prev];
                     const last = next[next.length - 1];
                     if (last?.role === "assistant") {
                       next[next.length - 1] = {
                         ...last,
-                        exports: [...(last.exports ?? []), ...newExports],
+                        exports:
+                          newExports.length > 0
+                            ? [...(last.exports ?? []), ...newExports]
+                            : last.exports,
+                        timeline:
+                          newTimeline.length > 0
+                            ? [...(last.timeline ?? []), ...newTimeline]
+                            : last.timeline,
                       };
                     }
                     return next;
@@ -747,12 +799,35 @@ export default function AgentChatPage() {
               >
                 <Paperclip className="h-4 w-4" />
               </button>
+              <button
+                type="button"
+                onClick={() => setRichMode((v) => !v)}
+                aria-label={
+                  richMode
+                    ? "Rich mode on — agent can run code, generate files, search the web (slower, ~5-10× more costly per turn)"
+                    : "Enable Rich mode — agent can run code, generate files, search the web (slower, ~5-10× more costly per turn)"
+                }
+                title={
+                  richMode
+                    ? "Rich mode: ON — agent runs code, generates files, searches web. Slower + costlier."
+                    : "Rich mode: OFF — fast chat. Click to enable file generation / multi-step work."
+                }
+                className={cn(
+                  "inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors",
+                  richMode
+                    ? "bg-purple-600 text-white hover:bg-purple-600/90"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                )}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                Rich
+              </button>
               <Textarea
                 ref={textareaRef}
                 value={input}
                 onChange={(e) => handleInputChange(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder={`Message ${agentMeta?.name ?? "agent"}…`}
+                placeholder={`Message ${agentMeta?.name ?? "agent"}…${richMode ? "  (rich mode)" : ""}`}
                 rows={1}
                 disabled={sending}
                 className="min-h-[36px] max-h-36 flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
@@ -768,7 +843,17 @@ export default function AgentChatPage() {
               </Button>
             </div>
             <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
-              <span>Enter to send · Shift + Enter for new line</span>
+              <span>
+                Enter to send · Shift + Enter for new line
+                {richMode && (
+                  <>
+                    {" · "}
+                    <span className="text-purple-600 dark:text-purple-400">
+                      Rich mode: agent can run code &amp; generate files (slower, costlier)
+                    </span>
+                  </>
+                )}
+              </span>
               {input.length > SOFT_LIMIT && (
                 <span
                   className={
@@ -874,6 +959,10 @@ function MessageBubble({
 
   const isUser = message.role === "user";
   const hasExports = !isUser && (message.exports?.length ?? 0) > 0;
+  const hasTimeline =
+    !isUser &&
+    message.mode === "rich" &&
+    (message.timeline?.length ?? 0) > 0;
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div
@@ -887,14 +976,28 @@ function MessageBubble({
         {isUser ? (
           <div className="whitespace-pre-wrap">{message.content}</div>
         ) : (
-          <div className="prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
-            >
-              {message.content || "…"}
-            </ReactMarkdown>
-          </div>
+          <>
+            {hasTimeline && (
+              <AgentRunsTimeline
+                timeline={message.timeline!}
+                streaming={message.streaming ?? false}
+              />
+            )}
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+              >
+                {message.content || (message.streaming ? "" : "…")}
+              </ReactMarkdown>
+            </div>
+            {message.mode === "rich" && !message.streaming && !hasTimeline && (
+              <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-purple-500/10 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
+                <Sparkles className="h-2.5 w-2.5" />
+                Rich mode
+              </div>
+            )}
+          </>
         )}
         {hasExports && (
           <div className="mt-3 space-y-1.5 border-t border-border/40 pt-3">
@@ -906,6 +1009,95 @@ function MessageBubble({
       </div>
     </div>
   );
+}
+
+function AgentRunsTimeline({
+  timeline,
+  streaming,
+}: {
+  timeline: ChatTimelineEntry[];
+  streaming: boolean;
+}) {
+  // Default open while streaming, collapsed once done.
+  const [open, setOpen] = useState(streaming);
+  // Auto-collapse when streaming finishes.
+  useEffect(() => {
+    if (!streaming) setOpen(false);
+  }, [streaming]);
+
+  const toolUseCount = timeline.filter((t) => t.type === "tool_use").length;
+  const thinkingCount = timeline.filter((t) => t.type === "thinking").length;
+  const summary = streaming
+    ? `Running…  ${toolUseCount} tool${toolUseCount === 1 ? "" : "s"}, ${thinkingCount} thought${thinkingCount === 1 ? "" : "s"}`
+    : `Agent runs  ·  ${toolUseCount} tool${toolUseCount === 1 ? "" : "s"}, ${thinkingCount} thought${thinkingCount === 1 ? "" : "s"}`;
+
+  return (
+    <div className="mb-2 rounded-md border border-purple-500/20 bg-purple-500/5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs"
+      >
+        <span className="inline-flex items-center gap-1.5 font-medium text-purple-700 dark:text-purple-300">
+          <Sparkles className="h-3 w-3" />
+          {summary}
+        </span>
+        <span className="text-purple-500/60">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <ul className="space-y-1 border-t border-purple-500/20 px-3 py-2 text-[11px]">
+          {timeline.map((entry, idx) => (
+            <li key={idx} className="font-mono text-muted-foreground">
+              {renderTimelineEntry(entry)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function renderTimelineEntry(entry: ChatTimelineEntry): React.ReactNode {
+  if (entry.type === "thinking") {
+    return (
+      <span>
+        <span className="text-purple-600 dark:text-purple-400">🤔 thinking</span>
+        {entry.text && (
+          <span className="ml-1 italic text-muted-foreground/80">
+            {entry.text.slice(0, 140)}
+            {entry.text.length > 140 ? "…" : ""}
+          </span>
+        )}
+      </span>
+    );
+  }
+  if (entry.type === "tool_use") {
+    const inputPreview =
+      entry.input && Object.keys(entry.input).length > 0
+        ? ` ${JSON.stringify(entry.input).slice(0, 80)}${JSON.stringify(entry.input).length > 80 ? "…" : ""}`
+        : "";
+    return (
+      <span>
+        <span className="text-emerald-600 dark:text-emerald-400">▸</span>{" "}
+        <span className="font-medium">{entry.name ?? "tool"}</span>
+        {inputPreview && (
+          <span className="text-muted-foreground/70">{inputPreview}</span>
+        )}
+      </span>
+    );
+  }
+  if (entry.type === "custom_tool_use") {
+    return (
+      <span>
+        <span className="text-amber-600 dark:text-amber-400">★</span>{" "}
+        <span className="font-medium">{entry.name ?? "custom_tool"}</span>
+      </span>
+    );
+  }
+  if (entry.type === "tool_done") {
+    return <span className="text-muted-foreground/60">  done</span>;
+  }
+  return null;
 }
 
 function ExportDownloadCard({ export: exp }: { export: ChatMessageExport }) {
