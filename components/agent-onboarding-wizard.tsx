@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -33,7 +32,9 @@ interface AgentOnboardingWizardProps {
 function defaultValueFor(field: ProfileField): FieldValue {
   if (field.defaultValue !== undefined)
     return field.defaultValue as FieldValue;
-  if (field.type === "boolean") return false;
+  // For required booleans, leave the value null so the user must actively
+  // pick Yes/No rather than accepting a default that may not be theirs.
+  if (field.type === "boolean") return field.required ? null : false;
   if (field.type === "multiselect") return [];
   return "";
 }
@@ -403,14 +404,39 @@ function FieldRow({
       )}
 
       {field.type === "boolean" && (
-        <div className="flex items-center gap-2 pt-1">
-          <Switch
-            checked={Boolean(value)}
-            onCheckedChange={(c) => onChange(c)}
-          />
-          <span className="text-sm text-muted-foreground">
-            {value ? "Yes" : "No"}
-          </span>
+        <div
+          role="radiogroup"
+          aria-label={field.label}
+          className="inline-flex rounded-md border bg-background p-0.5"
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={value === true}
+            onClick={() => onChange(true)}
+            className={cn(
+              "min-w-[80px] rounded px-4 py-1.5 text-sm font-medium transition-colors",
+              value === true
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={value === false}
+            onClick={() => onChange(false)}
+            className={cn(
+              "min-w-[80px] rounded px-4 py-1.5 text-sm font-medium transition-colors",
+              value === false
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            No
+          </button>
         </div>
       )}
 
