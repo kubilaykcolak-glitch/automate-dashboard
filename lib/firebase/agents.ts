@@ -39,6 +39,10 @@ function snapshotToAgent(id: string, data: Record<string, unknown>): Agent {
       typeof data.customSystemPrompt === "string"
         ? (data.customSystemPrompt as string)
         : null,
+    profile:
+      data.profile && typeof data.profile === "object"
+        ? (data.profile as Agent["profile"])
+        : null,
   };
 }
 
@@ -112,6 +116,22 @@ export async function activateAgentFromConfig(
   await setDoc(ref, payload);
   const created = await getDoc(ref);
   return snapshotToAgent(created.id, created.data() ?? payload);
+}
+
+/**
+ * Save (or update) the per-user profile data captured by the onboarding wizard.
+ * Stored inline on the agent doc so a single read returns everything the chat
+ * route needs.
+ */
+export async function updateAgentProfile(
+  uid: string,
+  agentId: string,
+  profile: Record<string, string | boolean | string[] | null>
+): Promise<void> {
+  await updateDoc(doc(db, "users", uid, "agents", agentId), {
+    profile,
+    profileUpdatedAt: serverTimestamp(),
+  });
 }
 
 /**

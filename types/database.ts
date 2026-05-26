@@ -66,4 +66,7 @@ export interface Agent {
   lastMessageAt?: Timestamp | null;
   /** If set, overrides the built-in systemPrompt from the AgentConfig registry. */
   customSystemPrompt?: string | null;
+  /** Per-user profile data captured during the onboarding wizard.
+   *  Shape is defined by the AgentConfig.profileSchema for this type. */
+  profile?: Record<string, string | boolean | string[] | null> | null;
 }

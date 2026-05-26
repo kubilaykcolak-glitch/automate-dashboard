@@ -19,6 +19,42 @@ export interface AgentSession {
   updatedAt: Date;
 }
 
+export type ProfileFieldType =
+  | "text"
+  | "textarea"
+  | "select"
+  | "multiselect"
+  | "boolean"
+  | "date";
+
+export interface ProfileFieldOption {
+  value: string;
+  label: string;
+}
+
+export interface ProfileField {
+  key: string;
+  label: string;
+  type: ProfileFieldType;
+  options?: ProfileFieldOption[];
+  placeholder?: string;
+  helpText?: string;
+  required?: boolean;
+  defaultValue?: string | boolean | string[];
+  /** Show this field only when another field equals a specific value. */
+  showIf?: { field: string; equals: string | boolean };
+}
+
+export interface ProfileStep {
+  title: string;
+  description?: string;
+  fields: ProfileField[];
+}
+
+export interface AgentProfileSchema {
+  steps: ProfileStep[];
+}
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -29,7 +65,11 @@ export interface AgentConfig {
   capabilities: string[];
   /** Suggested starter prompts shown on the empty-state of the chat UI. */
   starterPrompts?: string[];
+  /** Onboarding schema. If present, the agent shows a wizard on first open. */
+  profileSchema?: AgentProfileSchema;
 }
+
+export type AgentProfile = Record<string, string | boolean | string[] | null>;
 
 /**
  * Lightweight per-call context that the base runner threads through to

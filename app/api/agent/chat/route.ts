@@ -5,6 +5,7 @@ import { getSessionUser } from "@/lib/firebase/session";
 import { anthropic } from "@/lib/anthropic/client";
 import { getAgentConfig } from "@/lib/anthropic/agent-configs";
 import { DEFAULT_MAX_TOKENS, DEFAULT_MODEL } from "@/lib/anthropic/agents";
+import type { AgentProfileSchema, ProfileField } from "@/lib/anthropic/types";
 import {
   attachContextToMessages,
   buildContextString,
@@ -36,6 +37,49 @@ interface ChatRequestBody {
 interface AnthropicMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+function formatProfileBlock(
+  profile: Record<string, unknown> | null,
+  schema: AgentProfileSchema | null
+): string | null {
+  if (!profile || !schema) return null;
+  const lines: string[] = [];
+  for (const step of schema.steps) {
+    for (const field of step.fields) {
+      const raw = profile[field.key];
+      if (raw === undefined || raw === null || raw === "") continue;
+      if (Array.isArray(raw) && raw.length === 0) continue;
+      lines.push(`- ${field.label}: ${stringifyProfileValue(field, raw)}`);
+    }
+  }
+  if (lines.length === 0) return null;
+  return [
+    "# About this user",
+    "Use these facts as ground truth in every response. Don't ask for information that's already here.",
+    "",
+    ...lines,
+  ].join("\n");
+}
+
+function stringifyProfileValue(field: ProfileField, raw: unknown): string {
+  if (typeof raw === "boolean") return raw ? "Yes" : "No";
+  if (Array.isArray(raw)) {
+    if (field.options) {
+      return raw
+        .map(
+          (v) =>
+            field.options?.find((o) => o.value === v)?.label ?? String(v)
+        )
+        .join(", ");
+    }
+    return raw.map((v) => String(v)).join(", ");
+  }
+  if (field.options) {
+    const match = field.options.find((o) => o.value === raw);
+    if (match) return match.label;
+  }
+  return String(raw);
 }
 
 function buildUserContent(message: string, files: ContextFile[] | undefined): string {
@@ -122,6 +166,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         type?: string;
         customSystemPrompt?: string | null;
         name?: string;
+        profile?: Record<string, unknown> | null;
       }
     | undefined;
   const agentName = agentData?.name ?? agentId;
@@ -145,6 +190,12 @@ export async function POST(request: NextRequest): Promise<Response> {
     agentData.customSystemPrompt.trim().length > 0
       ? agentData.customSystemPrompt
       : config.systemPrompt;
+
+  // Format the per-user profile as a structured block the model can reference.
+  const profileBlock = formatProfileBlock(
+    agentData?.profile ?? null,
+    config.profileSchema ?? null
+  );
 
   // 2. Resolve or create the session.
   const sessionsCol = userRef.collection("agentSessions");
@@ -247,13 +298,26 @@ export async function POST(request: NextRequest): Promise<Response> {
         const anthropicStream = await anthropic.messages.create({
           model: DEFAULT_MODEL,
           max_tokens: DEFAULT_MAX_TOKENS,
-          system: [
-            {
-              type: "text",
-              text: effectiveSystemPrompt,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
+          system: profileBlock
+            ? [
+                {
+                  type: "text",
+                  text: effectiveSystemPrompt,
+                  cache_control: { type: "ephemeral" },
+                },
+                {
+                  type: "text",
+                  text: profileBlock,
+                  cache_control: { type: "ephemeral" },
+                },
+              ]
+            : [
+                {
+                  type: "text",
+                  text: effectiveSystemPrompt,
+                  cache_control: { type: "ephemeral" },
+                },
+              ],
           messages: fullMessages,
           stream: true,
         });

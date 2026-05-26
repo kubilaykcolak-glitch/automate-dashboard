@@ -1,4 +1,220 @@
-import type { AgentConfig } from "./types";
+import type { AgentConfig, AgentProfileSchema } from "./types";
+
+const ACCOUNTANCY_PROFILE_SCHEMA: AgentProfileSchema = {
+  steps: [
+    {
+      title: "Business basics",
+      description:
+        "Tell us about your business so the agent can give accurate, UK-aware answers.",
+      fields: [
+        {
+          key: "businessName",
+          label: "Business name",
+          type: "text",
+          placeholder: "e.g. Acme Consulting Ltd",
+          required: true,
+        },
+        {
+          key: "businessType",
+          label: "Business type",
+          type: "select",
+          required: true,
+          options: [
+            { value: "sole_trader", label: "Sole trader" },
+            { value: "limited_company", label: "Limited company" },
+            { value: "partnership", label: "Partnership" },
+          ],
+        },
+        {
+          key: "country",
+          label: "Country",
+          type: "select",
+          required: true,
+          defaultValue: "uk",
+          options: [{ value: "uk", label: "United Kingdom" }],
+          helpText: "Only UK is supported for now — HMRC tax rules apply.",
+        },
+        {
+          key: "tradingStartDate",
+          label: "Trading start date",
+          type: "date",
+          helpText: "Optional. Helps with first-year tax calculations.",
+        },
+      ],
+    },
+    {
+      title: "Tax setup",
+      description: "How your accounting is structured.",
+      fields: [
+        {
+          key: "taxYearStart",
+          label: "Tax year start",
+          type: "select",
+          required: true,
+          defaultValue: "6_april",
+          options: [
+            { value: "6_april", label: "6 April (UK individual / sole trader)" },
+            { value: "1_january", label: "1 January (calendar year)" },
+            { value: "custom", label: "Custom (Ltd company year-end)" },
+          ],
+        },
+        {
+          key: "taxYearCustom",
+          label: "Custom year-end date",
+          type: "date",
+          placeholder: "Pick the last day of your accounting year",
+          showIf: { field: "taxYearStart", equals: "custom" },
+        },
+        {
+          key: "vatRegistered",
+          label: "VAT registered",
+          type: "boolean",
+          required: true,
+        },
+        {
+          key: "vatScheme",
+          label: "VAT scheme",
+          type: "select",
+          showIf: { field: "vatRegistered", equals: true },
+          options: [
+            { value: "standard", label: "Standard" },
+            { value: "flat_rate", label: "Flat-rate" },
+            { value: "cash", label: "Cash accounting" },
+          ],
+        },
+        {
+          key: "accountingBasis",
+          label: "Accounting basis",
+          type: "select",
+          required: true,
+          defaultValue: "cash",
+          options: [
+            { value: "cash", label: "Cash basis" },
+            { value: "accrual", label: "Accrual / traditional" },
+          ],
+          helpText: "Cash basis is most common for small sole traders.",
+        },
+      ],
+    },
+    {
+      title: "Data sources",
+      description:
+        "Upload bank statements or connect tools later — these power transaction categorisation.",
+      fields: [
+        {
+          key: "dataSourceNotes",
+          label: "Notes for the agent",
+          type: "textarea",
+          placeholder:
+            "e.g. 'I'll upload Starling and PayPal statements monthly' — optional",
+        },
+      ],
+    },
+  ],
+};
+
+const OPERATIONS_PROFILE_SCHEMA: AgentProfileSchema = {
+  steps: [
+    {
+      title: "About you",
+      description: "So the agent can match your context and tone.",
+      fields: [
+        {
+          key: "fullName",
+          label: "Your name",
+          type: "text",
+          required: true,
+        },
+        {
+          key: "role",
+          label: "Your role",
+          type: "text",
+          placeholder: "e.g. Founder, Operations Manager, Chief of Staff",
+          required: true,
+        },
+        {
+          key: "companyName",
+          label: "Company or team name",
+          type: "text",
+        },
+        {
+          key: "teamSize",
+          label: "Team size",
+          type: "select",
+          options: [
+            { value: "1", label: "Just me" },
+            { value: "2-5", label: "2-5" },
+            { value: "6-20", label: "6-20" },
+            { value: "21-50", label: "21-50" },
+            { value: "50+", label: "50+" },
+          ],
+        },
+      ],
+    },
+    {
+      title: "How you work",
+      description: "Helps the agent draft replies in your voice and pick the right tools.",
+      fields: [
+        {
+          key: "tools",
+          label: "Tools you use day-to-day",
+          type: "multiselect",
+          options: [
+            { value: "slack", label: "Slack" },
+            { value: "gmail", label: "Gmail" },
+            { value: "notion", label: "Notion" },
+            { value: "linear", label: "Linear" },
+            { value: "asana", label: "Asana" },
+            { value: "google_docs", label: "Google Docs" },
+            { value: "ms_teams", label: "Microsoft Teams" },
+          ],
+        },
+        {
+          key: "communicationStyle",
+          label: "Default communication style",
+          type: "select",
+          defaultValue: "concise_friendly",
+          options: [
+            { value: "concise_friendly", label: "Concise and friendly" },
+            { value: "detailed_professional", label: "Detailed and professional" },
+            { value: "warm_personal", label: "Warm and personal" },
+            { value: "formal", label: "Formal" },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const GENERAL_PROFILE_SCHEMA: AgentProfileSchema = {
+  steps: [
+    {
+      title: "Quick intro",
+      description: "Just enough so the agent knows who it's helping.",
+      fields: [
+        {
+          key: "firstName",
+          label: "First name",
+          type: "text",
+          required: true,
+        },
+        {
+          key: "profession",
+          label: "What do you do?",
+          type: "text",
+          placeholder: "e.g. Marketing consultant, freelance designer",
+        },
+        {
+          key: "preferences",
+          label: "Anything I should know about how you like to work?",
+          type: "textarea",
+          placeholder:
+            "Optional. e.g. 'I prefer short replies' or 'I'm British, use UK spelling'",
+        },
+      ],
+    },
+  ],
+};
 
 export const ACCOUNTANCY_SYSTEM_PROMPT = `You are an expert UK accountant and financial assistant working with a small business owner or self-employed individual.
 
@@ -69,6 +285,7 @@ export const AGENT_CONFIGS: AgentConfig[] = [
       "Which of these expenses look tax-deductible under HMRC rules?",
       "Review this invoice and flag anything unusual.",
     ],
+    profileSchema: ACCOUNTANCY_PROFILE_SCHEMA,
   },
   {
     id: "operations",
@@ -91,6 +308,7 @@ export const AGENT_CONFIGS: AgentConfig[] = [
       "Turn these meeting notes into a task list with owners.",
       "What are my overdue follow-ups?",
     ],
+    profileSchema: OPERATIONS_PROFILE_SCHEMA,
   },
   {
     id: "general",
@@ -113,6 +331,7 @@ export const AGENT_CONFIGS: AgentConfig[] = [
       "Research the latest developments on a topic.",
       "Summarise this article for me.",
     ],
+    profileSchema: GENERAL_PROFILE_SCHEMA,
   },
 ];
 

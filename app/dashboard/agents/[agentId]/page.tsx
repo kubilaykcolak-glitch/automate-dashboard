@@ -27,8 +27,11 @@ import rehypeHighlight from "rehype-highlight";
 import { toast } from "sonner";
 import { useAuth } from "@/components/auth-provider";
 import { getAgentConfig } from "@/lib/anthropic/agent-configs";
+import { updateAgentProfile } from "@/lib/firebase/agents";
 import { subscribeFiles } from "@/lib/firebase/storage";
 import type { StoredFile } from "@/types/database";
+import type { AgentProfile } from "@/lib/anthropic/types";
+import { AgentOnboardingWizard } from "@/components/agent-onboarding-wizard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,6 +66,7 @@ interface AgentMeta {
   name: string;
   type: string;
   description: string;
+  profile: AgentProfile | null;
 }
 
 const MAX_INPUT_CHARS = 10_000;
@@ -117,37 +121,50 @@ export default function AgentChatPage() {
 
   // We need the agent's type so we can show its name + capabilities. Pull it
   // straight from Firestore via the existing agents subcollection.
+  // Also subscribe so profile updates (saved by the wizard) are reflected live.
   useEffect(() => {
     if (!user || !agentId) return;
     let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
     (async () => {
       try {
-        const { doc, getDoc } = await import("firebase/firestore");
+        const { doc, onSnapshot } = await import("firebase/firestore");
         const { db } = await import("@/lib/firebase/client");
-        const snap = await getDoc(doc(db, "users", user.uid, "agents", agentId));
-        if (!snap.exists()) {
-          if (!cancelled) toast.error("Agent not found. Activate it from the agents page.");
-          return;
-        }
-        const data = snap.data() as {
-          name?: string;
-          type?: string;
-          description?: string;
-        };
-        if (!cancelled) {
-          setAgentMeta({
-            id: agentId,
-            name: data.name ?? agentId,
-            type: data.type ?? agentId,
-            description: data.description ?? "",
-          });
-        }
+        const ref = doc(db, "users", user.uid, "agents", agentId);
+        unsubscribe = onSnapshot(
+          ref,
+          (snap) => {
+            if (cancelled) return;
+            if (!snap.exists()) {
+              toast.error("Agent not found. Activate it from the agents page.");
+              return;
+            }
+            const data = snap.data() as {
+              name?: string;
+              type?: string;
+              description?: string;
+              profile?: AgentProfile | null;
+            };
+            setAgentMeta({
+              id: agentId,
+              name: data.name ?? agentId,
+              type: data.type ?? agentId,
+              description: data.description ?? "",
+              profile: data.profile ?? null,
+            });
+          },
+          (err) => {
+            if (!cancelled) toast.error(err.message);
+          }
+        );
       } catch (e) {
-        if (!cancelled) toast.error(e instanceof Error ? e.message : "Failed to load agent.");
+        if (!cancelled)
+          toast.error(e instanceof Error ? e.message : "Failed to load agent.");
       }
     })();
     return () => {
       cancelled = true;
+      if (unsubscribe) unsubscribe();
     };
   }, [user, agentId]);
 
@@ -404,10 +421,50 @@ export default function AgentChatPage() {
     [files, attachedFileIds]
   );
 
+  // ---------- Profile / onboarding ----------
+
+  const [editingProfile, setEditingProfile] = useState(false);
+
+  async function handleSaveProfile(profile: AgentProfile) {
+    if (!user || !agentId) return;
+    try {
+      await updateAgentProfile(user.uid, agentId, profile);
+      toast.success("Agent set up");
+      setEditingProfile(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Save failed.");
+    }
+  }
+
   // ---------- Render ----------
 
   const loading = authLoading || !agentMeta;
   const hasMessages = messages.length > 0;
+  const needsOnboarding =
+    !loading &&
+    agentMeta !== null &&
+    config?.profileSchema &&
+    !agentMeta.profile;
+  const showWizard = needsOnboarding || editingProfile;
+
+  if (showWizard && agentMeta && config?.profileSchema) {
+    return (
+      <div className="mx-auto max-w-3xl py-8">
+        <AgentOnboardingWizard
+          agentName={agentMeta.name}
+          schema={config.profileSchema}
+          initialValues={agentMeta.profile ?? undefined}
+          editing={editingProfile && !needsOnboarding}
+          onSave={handleSaveProfile}
+          onCancel={
+            editingProfile && !needsOnboarding
+              ? () => setEditingProfile(false)
+              : undefined
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="-m-4 flex h-[calc(100dvh-4rem)] flex-col md:-m-6 md:flex-row md:pb-0">
@@ -429,6 +486,17 @@ export default function AgentChatPage() {
               )}
             </div>
           </div>
+          {config?.profileSchema && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start"
+              onClick={() => setEditingProfile(true)}
+            >
+              <Sparkles className="mr-2 h-4 w-4" />
+              Edit profile
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

@@ -250,6 +250,7 @@ function ActiveAgentCard({
   const config = getAgentConfig(agent.type);
   const messageCount = agent.messageCount ?? 0;
   const lastMessageAt = agent.lastMessageAt?.toDate?.() ?? null;
+  const needsSetup = !!config?.profileSchema && !agent.profile;
 
   return (
     <Card className="flex flex-col">
@@ -308,7 +309,7 @@ function ActiveAgentCard({
           href={`/dashboard/agents/${agent.id}`}
           className="inline-flex h-9 w-full items-center justify-center gap-1 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
         >
-          Open
+          {needsSetup ? "Set up" : "Open"}
           <ArrowRight className="h-4 w-4" />
         </Link>
       </CardFooter>
