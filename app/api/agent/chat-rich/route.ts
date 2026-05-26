@@ -10,6 +10,8 @@ import {
   type ContextFileMetadata,
 } from "@/lib/anthropic/context";
 import {
+  PAID_PLAN_MONTHLY_LIMIT,
+  getMonthlyTokenSummary,
   getMonthlyUsage,
   incrementMonthlyUsage,
   recordTokenUsage,
@@ -210,17 +212,38 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   }
 
-  // Rate-limit check (same as the standard route — message-count budget).
-  const usage = await getMonthlyUsage(session.uid);
+  // Quota checks — same two gates as the standard route. Rich-mode turns
+  // burn tokens 5-10× faster than Quick, so the token-budget gate matters
+  // more here.
+  const [usage, tokenSummary] = await Promise.all([
+    getMonthlyUsage(session.uid),
+    getMonthlyTokenSummary(session.uid),
+  ]);
   if (usage.count >= usage.limit) {
     return NextResponse.json(
       {
         error:
           usage.plan === "paid"
             ? `You've used all ${usage.limit} messages on your plan this month.`
-            : `You've used all ${usage.limit} free messages this month. Upgrade for more.`,
+            : `You've used all ${usage.limit} free messages this month. Upgrade to Pro for ${PAID_PLAN_MONTHLY_LIMIT} messages/month.`,
         code: "rate_limited",
         usage,
+      },
+      { status: 429 }
+    );
+  }
+  if (tokenSummary.totalTokens >= tokenSummary.budget) {
+    return NextResponse.json(
+      {
+        error:
+          usage.plan === "paid"
+            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). Resets next month, or contact us for additional capacity.`
+            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${(5_000_000).toLocaleString()} tokens/month.`,
+        code: "token_budget_exceeded",
+        tokens: {
+          used: tokenSummary.totalTokens,
+          budget: tokenSummary.budget,
+        },
       },
       { status: 429 }
     );

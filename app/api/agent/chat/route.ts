@@ -18,6 +18,8 @@ import {
   type ContextFileMetadata,
 } from "@/lib/anthropic/context";
 import {
+  PAID_PLAN_MONTHLY_LIMIT,
+  getMonthlyTokenSummary,
   getMonthlyUsage,
   incrementMonthlyUsage,
   recordTokenUsage,
@@ -200,17 +202,39 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   const userRef = adminDb.collection("users").doc(session.uid);
 
-  // 0. Rate limit check — fail fast before the expensive Anthropic call.
-  const usage = await getMonthlyUsage(session.uid);
+  // 0. Quota checks — fail fast before any Anthropic spend.
+  // Two independent gates: monthly message count, and monthly token budget.
+  // Either one tripping returns 429 with a clear code so the client can
+  // distinguish (and a future UI can route appropriately).
+  const [usage, tokenSummary] = await Promise.all([
+    getMonthlyUsage(session.uid),
+    getMonthlyTokenSummary(session.uid),
+  ]);
   if (usage.count >= usage.limit) {
     return NextResponse.json(
       {
         error:
           usage.plan === "paid"
             ? `You've used all ${usage.limit} messages on your plan this month. Limit resets next month.`
-            : `You've used all ${usage.limit} free messages this month. Upgrade to Pro for ${1000} messages/month.`,
+            : `You've used all ${usage.limit} free messages this month. Upgrade to Pro for ${PAID_PLAN_MONTHLY_LIMIT} messages/month.`,
         code: "rate_limited",
         usage,
+      },
+      { status: 429 }
+    );
+  }
+  if (tokenSummary.totalTokens >= tokenSummary.budget) {
+    return NextResponse.json(
+      {
+        error:
+          usage.plan === "paid"
+            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). Resets next month, or contact us for additional capacity.`
+            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${(5_000_000).toLocaleString()} tokens/month.`,
+        code: "token_budget_exceeded",
+        tokens: {
+          used: tokenSummary.totalTokens,
+          budget: tokenSummary.budget,
+        },
       },
       { status: 429 }
     );

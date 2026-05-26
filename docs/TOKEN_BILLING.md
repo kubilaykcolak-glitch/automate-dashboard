@@ -82,7 +82,9 @@ FREE_PLAN_MONTHLY_TOKEN_BUDGET   =   500,000 tokens
 PAID_PLAN_MONTHLY_TOKEN_BUDGET   = 5,000,000 tokens
 ```
 
-These are **soft** budgets — usage past the budget is *not* blocked. It is recorded so that future metered billing can invoice the overage at the end of the month. The blocker today is still the legacy message count (`FREE_PLAN_MONTHLY_LIMIT = 100`, `PAID_PLAN_MONTHLY_LIMIT = 1000` messages).
+These are **hard** budgets — once a user crosses their plan's token budget, the chat routes return HTTP 429 with `code: "token_budget_exceeded"` until the next monthly reset (or a plan upgrade). Two independent gates run side by side: the legacy `count` (messages: 100 free / 1000 paid) and the token budget. Either tripping blocks the chat.
+
+(Originally these were informational only; tightened to hard-enforce after audit finding #3 because a few large file uploads could otherwise burn millions of tokens within the message-count quota.)
 
 `getMonthlyTokenSummary(uid)` returns the breakdown including `overageTokens = max(0, totalTokens - budget)` for a future billing UI to read.
 
