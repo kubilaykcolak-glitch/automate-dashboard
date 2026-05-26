@@ -49,20 +49,25 @@ export default function AgentsPage() {
   const { user, loading: authLoading } = useAuth();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activatingType, setActivatingType] = useState<string | null>(null);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
 
   useEffect(() => {
     if (!user) return;
     setLoading(true);
+    setLoadError(null);
     const unsub = subscribeAgents(
       user.uid,
       (next) => {
         setAgents(next);
         setLoading(false);
+        setLoadError(null);
       },
       (err) => {
-        toast.error(err.message);
+        const message = err.message || "Failed to load agents.";
+        toast.error(message);
+        setLoadError(message);
         setLoading(false);
       }
     );
@@ -127,6 +132,17 @@ export default function AgentsPage() {
         title="Agents"
         subtitle="Activate a built-in agent to start using it, or customise one you've already activated."
       />
+
+      {loadError && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div className="font-medium">Could not load your agents.</div>
+          <div className="text-xs">{loadError}</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            Most common cause: Firestore security rules blocking the query.
+            Re-run <code className="font-mono">node scripts/deploy-firestore-rules.mjs</code>.
+          </div>
+        </div>
+      )}
 
       {isLoading && <SkeletonCardGrid count={3} withIcon />}
 
