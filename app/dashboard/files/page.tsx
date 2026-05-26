@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDropzone, type FileRejection } from "react-dropzone";
 import {
   Download,
   File as FileIcon,
   FileSpreadsheet,
   FileText,
+  RefreshCw,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -20,6 +21,16 @@ import {
   uploadFile,
 } from "@/lib/firebase/storage";
 import type { StoredFile } from "@/types/database";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
@@ -54,10 +65,16 @@ interface UploadJob {
   error?: string;
 }
 
+const ACCEPT_EXTENSIONS = Object.values(ACCEPT).flat();
+
 export default function FilesPage() {
   const { user, loading: authLoading } = useAuth();
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [uploads, setUploads] = useState<UploadJob[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<StoredFile | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [replacingFile, setReplacingFile] = useState<StoredFile | null>(null);
+  const replaceInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -119,14 +136,70 @@ export default function FilesPage() {
   );
   const pctUsed = Math.min(100, Math.round((totalBytes / STORAGE_LIMIT_BYTES) * 100));
 
-  async function onDelete(file: StoredFile) {
-    if (!user) return;
-    if (!confirm(`Delete "${file.name}"? This cannot be undone.`)) return;
+  async function onDeleteConfirmed() {
+    if (!user || !pendingDelete) return;
+    const file = pendingDelete;
+    setDeleting(true);
     try {
       await deleteFile(user.uid, file.name);
       toast.success(`Deleted ${file.name}`);
+      setPendingDelete(null);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Delete failed.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function onReplaceClick(file: StoredFile) {
+    if (!user) return;
+    setReplacingFile(file);
+    // Reset so picking the same path twice still triggers onChange.
+    if (replaceInputRef.current) replaceInputRef.current.value = "";
+    replaceInputRef.current?.click();
+  }
+
+  async function onReplaceFileChosen(
+    event: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const picked = event.target.files?.[0];
+    const target = replacingFile;
+    setReplacingFile(null);
+    if (!picked || !user || !target) return;
+
+    if (picked.size > MAX_FILE_BYTES) {
+      toast.error(
+        `${picked.name}: file is larger than ${formatBytes(MAX_FILE_BYTES)}.`
+      );
+      return;
+    }
+
+    // Preserve the original filename so the Firestore doc id, storage path,
+    // and any chat attachments referencing this file stay valid.
+    const renamed = new File([picked], target.name, {
+      type: picked.type || target.type || "application/octet-stream",
+      lastModified: picked.lastModified,
+    });
+
+    const key = `${target.name}-replace-${Date.now()}`;
+    setUploads((prev) => [
+      ...prev,
+      { key, name: `Replacing ${target.name}`, progress: 0 },
+    ]);
+    try {
+      await uploadFile(user.uid, renamed, (pct) => {
+        setUploads((prev) =>
+          prev.map((u) => (u.key === key ? { ...u, progress: pct } : u))
+        );
+      });
+      toast.success(`Replaced ${target.name}`);
+      setUploads((prev) => prev.filter((u) => u.key !== key));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Replace failed.";
+      toast.error(`${target.name}: ${message}`);
+      setUploads((prev) =>
+        prev.map((u) => (u.key === key ? { ...u, error: message } : u))
+      );
     }
   }
 
@@ -267,9 +340,20 @@ export default function FilesPage() {
                         type="button"
                         variant="ghost"
                         size="icon"
+                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                        aria-label={`Replace ${file.name}`}
+                        title="Replace with a new version (keeps the same name)"
+                        onClick={() => onReplaceClick(file)}
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
                         className="h-8 w-8 text-muted-foreground hover:text-destructive"
                         aria-label={`Delete ${file.name}`}
-                        onClick={() => onDelete(file)}
+                        onClick={() => setPendingDelete(file)}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -281,6 +365,42 @@ export default function FilesPage() {
           </Table>
         )}
       </Card>
+
+      <input
+        ref={replaceInputRef}
+        type="file"
+        className="hidden"
+        accept={ACCEPT_EXTENSIONS.join(",")}
+        onChange={onReplaceFileChosen}
+      />
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this file?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete
+                ? `"${pendingDelete.name}" will be removed permanently. Agents and chats that referenced it will no longer be able to read it.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting}
+              onClick={onDeleteConfirmed}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

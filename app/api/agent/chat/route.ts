@@ -15,8 +15,48 @@ import {
   buildContextString,
   type ContextFileMetadata,
 } from "@/lib/anthropic/context";
-import { getMonthlyUsage, incrementMonthlyUsage } from "@/lib/firebase/usage";
+import {
+  getMonthlyUsage,
+  incrementMonthlyUsage,
+  recordTokenUsage,
+} from "@/lib/firebase/usage";
 import { addActivityToBatch, logActivity } from "@/lib/firebase/activity";
+import { buildSkillManifest, getSkillBody } from "@/lib/anthropic/skills";
+import {
+  buildExport,
+  type ExportFormat,
+  type ExportRow,
+  type GeneratedExport,
+} from "@/lib/anthropic/exports";
+
+/**
+ * Per-turn ceiling on read_skill tool calls. Keeps cost bounded and prevents
+ * a confused model from loading half the library before answering. Three is
+ * empirically enough for compound questions (e.g. flat-rate VAT + use-of-home).
+ */
+const MAX_SKILL_LOADS_PER_TURN = 3;
+
+/**
+ * Per-turn ceiling on create_export tool calls. Five is comfortably enough
+ * for a "Q1-Q4 VAT returns + annual summary" style deliverable.
+ */
+const MAX_EXPORTS_PER_TURN = 5;
+
+/**
+ * Per-turn ceiling on Anthropic's server-side web_search tool. The tool is
+ * executed by Anthropic (not by our server) and billed separately on top of
+ * tokens — roughly $10 per 1,000 searches at time of writing. Three keeps
+ * cost-per-turn bounded while still allowing follow-up searches when the
+ * first result is insufficient.
+ */
+const MAX_WEB_SEARCHES_PER_TURN = 3;
+
+/**
+ * Hard iteration cap on the tool-use loop. Should never be hit in practice
+ * once per-tool caps are reached the agent answers, but acts as a
+ * belt-and-braces stop in case of unexpected tool behaviour.
+ */
+const MAX_TOOL_ITERATIONS = 8;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -201,6 +241,12 @@ export async function POST(request: NextRequest): Promise<Response> {
     config.profileSchema ?? null
   );
 
+  // Manifest of agent-scoped skills (name + description only). Bodies are NOT
+  // loaded here — Phase 2 will add a read_skill tool. For now, having the
+  // manifest in the system prompt nudges the agent to apply skill knowledge
+  // when relevant; the model treats each bullet as a topical reference.
+  const skillManifest = buildSkillManifest(agentType);
+
   // 2. Resolve or create the session.
   const sessionsCol = userRef.collection("agentSessions");
   const sessionRef = rawSessionId
@@ -282,6 +328,9 @@ export async function POST(request: NextRequest): Promise<Response> {
   const fullMessages = attachContextToMessages(baseMessages, contextString);
 
   // 4. Stream the response in the Vercel AI SDK Data Stream format.
+  // When skills are available, the route runs a tool-use loop: the model can
+  // call read_skill({name}) to load any skill's body mid-turn, and we feed
+  // the body back as a tool_result so the agent can use it in its answer.
   const encoder = new TextEncoder();
   let assistantText = "";
   let inputTokens = 0;
@@ -289,6 +338,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   let cacheReadInputTokens = 0;
   let cacheCreationInputTokens = 0;
   let stopReason: string | null = null;
+  const skillsUsed: string[] = [];
+  // Exports generated this turn. Pushed into the assistant message doc and
+  // streamed to the client as Vercel data-stream `2:` events so the chat UI
+  // can render download cards inline.
+  const exportsGenerated: GeneratedExport[] = [];
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -298,59 +352,400 @@ export async function POST(request: NextRequest): Promise<Response> {
         );
       };
 
-      try {
-        const anthropicStream = await anthropic.messages.create({
-          model: DEFAULT_MODEL,
-          max_tokens: DEFAULT_MAX_TOKENS,
-          output_config: { effort: DEFAULT_EFFORT },
-          system: profileBlock
-            ? [
-                {
-                  type: "text",
-                  text: effectiveSystemPrompt,
-                  cache_control: { type: "ephemeral" },
-                },
-                {
-                  type: "text",
-                  text: profileBlock,
-                  cache_control: { type: "ephemeral" },
-                },
-              ]
-            : [
-                {
-                  type: "text",
-                  text: effectiveSystemPrompt,
-                  cache_control: { type: "ephemeral" },
-                },
-              ],
-          messages: fullMessages,
-          stream: true,
+      // Build system blocks in stable order so prompt caching stays warm
+      // across requests: main prompt → user profile → skill manifest. Each
+      // block is marked ephemeral so cache hits accrue across the session.
+      const systemBlocks: Array<{
+        type: "text";
+        text: string;
+        cache_control: { type: "ephemeral" };
+      }> = [
+        {
+          type: "text",
+          text: effectiveSystemPrompt,
+          cache_control: { type: "ephemeral" },
+        },
+      ];
+      if (profileBlock) {
+        systemBlocks.push({
+          type: "text",
+          text: profileBlock,
+          cache_control: { type: "ephemeral" },
         });
+      }
+      if (skillManifest) {
+        systemBlocks.push({
+          type: "text",
+          text: skillManifest,
+          cache_control: { type: "ephemeral" },
+        });
+      }
 
-        for await (const event of anthropicStream) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            const text = event.delta.text;
-            if (text) {
-              assistantText += text;
-              enqueue("0", text);
-            }
-          } else if (event.type === "message_start") {
-            const usage = event.message.usage;
-            if (usage) {
-              inputTokens = usage.input_tokens ?? 0;
-              cacheReadInputTokens = usage.cache_read_input_tokens ?? 0;
-              cacheCreationInputTokens =
-                usage.cache_creation_input_tokens ?? 0;
-            }
-          } else if (event.type === "message_delta") {
-            stopReason = event.delta.stop_reason ?? stopReason;
-            if (event.usage?.output_tokens) {
-              outputTokens = event.usage.output_tokens;
+      // Tools registered on every chat call. Three kinds:
+      //   1. create_export — our server-executed tool; agent produces files.
+      //   2. read_skill    — our server-executed tool; loads skill bodies.
+      //   3. web_search    — Anthropic-executed *server tool*. We don't need
+      //      a branch in the loop for it; the API runs the search and the
+      //      results land directly in the model's context. Billed separately
+      //      from tokens (~$10 / 1,000 searches) — cap with max_uses.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tools: any[] = [
+        {
+          type: "web_search_20250305",
+          name: "web_search",
+          max_uses: MAX_WEB_SEARCHES_PER_TURN,
+        },
+        {
+          name: "create_export",
+          description:
+            "Generate a downloadable file (CSV, XLSX, or PDF) that the user can save to their computer or open in Excel / Google Sheets. Call this when the user asks for a report, summary, or downloadable deliverable — or when your structured output (transactions, tax calculations, line items, financial summaries) would be more useful as a file than inline text. Prefer CSV for raw transaction lists, XLSX for tax returns / multi-column financial reports, PDF for narrative summaries. After the tool returns, continue with your normal text response — the file appears inline in the chat as a download card.",
+          input_schema: {
+            type: "object" as const,
+            properties: {
+              format: {
+                type: "string",
+                enum: ["csv", "xlsx", "pdf"],
+                description:
+                  "csv: raw tabular data. xlsx: spreadsheet (best for tax returns, P&L, multi-column reports). pdf: narrative report / summary.",
+              },
+              filename: {
+                type: "string",
+                description:
+                  "Filename WITH extension, e.g. 'vat-return-q1-2025.xlsx'. Use kebab-case, no spaces. Be specific so the user knows what each file is.",
+              },
+              title: {
+                type: "string",
+                description:
+                  "Human-readable title shown in the download card (and on the first page of PDFs). E.g. 'Q1 2025/26 VAT Return'.",
+              },
+              rows: {
+                type: "array",
+                description:
+                  "Required for csv and xlsx. Array of row objects with consistent string keys (the keys become column headers). Values must be strings, numbers, or booleans. Example: [{\"Date\":\"2025-04-01\",\"Description\":\"Sale to Acme\",\"Amount\":1250.00}].",
+                items: { type: "object" as const },
+              },
+              markdown: {
+                type: "string",
+                description:
+                  "Required for pdf. Full markdown body. Supports headings (# ## ###), paragraphs, bullet lists, **bold**, and simple pipe tables. For complex tables prefer xlsx instead.",
+              },
+            },
+            required: ["format", "filename"],
+          },
+        },
+      ];
+      if (skillManifest) {
+        tools.push({
+          name: "read_skill",
+          description:
+            "Load the full body of one of the skills listed in the 'Available skills' system block. Call this when a listed skill is directly relevant to the user's current question — the body becomes available in your next response. Pass the kebab-case name exactly as shown in the manifest.",
+          input_schema: {
+            type: "object" as const,
+            properties: {
+              name: {
+                type: "string",
+                description:
+                  "The kebab-case skill name from the Available skills manifest, e.g. 'uk-vat-flat-rate'.",
+              },
+            },
+            required: ["name"],
+          },
+        });
+      }
+
+      // Working copy of the conversation history; the tool-use loop appends
+      // assistant turns (with tool_use blocks) and synthetic user turns
+      // (with tool_result blocks) to this array between iterations.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workingMessages: any[] = [...fullMessages];
+      let iterations = 0;
+      let skillLoadsThisTurn = 0;
+      let exportsThisTurn = 0;
+
+      try {
+        // Tool-use loop. Most turns exit on the first pass (no tool call,
+        // stop_reason === "end_turn"). When the agent decides a skill is
+        // relevant it issues a tool_use; we execute it server-side and feed
+        // the body back via tool_result, then call the model again.
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          iterations += 1;
+          if (iterations > MAX_TOOL_ITERATIONS) {
+            // Defensive: should never happen because the per-turn skill cap
+            // forces the agent to answer before this point.
+            stopReason = "max_iterations";
+            break;
+          }
+
+          const anthropicStream = await anthropic.messages.create({
+            model: DEFAULT_MODEL,
+            max_tokens: DEFAULT_MAX_TOKENS,
+            output_config: { effort: DEFAULT_EFFORT },
+            system: systemBlocks,
+            tools,
+            messages: workingMessages,
+            stream: true,
+          });
+
+          // Accumulate content blocks for this iteration by their stream index.
+          // A single assistant turn can interleave text and tool_use blocks.
+          interface BlockAccumulator {
+            type: "text" | "tool_use";
+            text?: string;
+            id?: string;
+            name?: string;
+            partialJson?: string;
+          }
+          const blocks: Record<number, BlockAccumulator> = {};
+          let iterStopReason: string | null = null;
+
+          for await (const event of anthropicStream) {
+            if (event.type === "message_start") {
+              const u = event.message.usage;
+              if (u) {
+                inputTokens += u.input_tokens ?? 0;
+                cacheReadInputTokens += u.cache_read_input_tokens ?? 0;
+                cacheCreationInputTokens +=
+                  u.cache_creation_input_tokens ?? 0;
+              }
+            } else if (event.type === "content_block_start") {
+              const blk = event.content_block;
+              if (blk.type === "text") {
+                blocks[event.index] = { type: "text", text: "" };
+              } else if (blk.type === "tool_use") {
+                blocks[event.index] = {
+                  type: "tool_use",
+                  id: blk.id,
+                  name: blk.name,
+                  partialJson: "",
+                };
+              }
+            } else if (event.type === "content_block_delta") {
+              const blk = blocks[event.index];
+              if (!blk) continue;
+              if (
+                event.delta.type === "text_delta" &&
+                blk.type === "text"
+              ) {
+                const text = event.delta.text;
+                if (text) {
+                  blk.text = (blk.text ?? "") + text;
+                  assistantText += text;
+                  enqueue("0", text);
+                }
+              } else if (
+                event.delta.type === "input_json_delta" &&
+                blk.type === "tool_use"
+              ) {
+                blk.partialJson =
+                  (blk.partialJson ?? "") + event.delta.partial_json;
+              }
+            } else if (event.type === "message_delta") {
+              iterStopReason = event.delta.stop_reason ?? iterStopReason;
+              if (event.usage?.output_tokens) {
+                outputTokens += event.usage.output_tokens;
+              }
             }
           }
+
+          stopReason = iterStopReason;
+
+          // End-of-turn: model answered (or errored). Break out of the loop.
+          if (iterStopReason !== "tool_use") {
+            break;
+          }
+
+          // The model wants to call tools. Reconstruct the assistant turn
+          // from accumulated blocks in stream-order, execute each tool_use,
+          // and synthesize a user turn containing the tool_results.
+          const indices = Object.keys(blocks)
+            .map((k) => Number(k))
+            .sort((a, b) => a - b);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const assistantBlocks: any[] = [];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const toolResultBlocks: any[] = [];
+
+          for (const i of indices) {
+            const blk = blocks[i];
+            if (blk.type === "text") {
+              if (blk.text && blk.text.length > 0) {
+                assistantBlocks.push({ type: "text", text: blk.text });
+              }
+              continue;
+            }
+            // tool_use block. Parse the streamed input JSON and execute.
+            let parsedInput: { name?: unknown } = {};
+            try {
+              parsedInput = blk.partialJson
+                ? JSON.parse(blk.partialJson)
+                : {};
+            } catch {
+              parsedInput = {};
+            }
+            assistantBlocks.push({
+              type: "tool_use",
+              id: blk.id,
+              name: blk.name,
+              input: parsedInput,
+            });
+
+            if (blk.name === "read_skill") {
+              if (skillLoadsThisTurn >= MAX_SKILL_LOADS_PER_TURN) {
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: `Skill load cap reached for this turn (${MAX_SKILL_LOADS_PER_TURN}). Answer the user with what you already have.`,
+                  is_error: true,
+                });
+                continue;
+              }
+              const rawName = (parsedInput as { name?: unknown }).name;
+              const skillName = typeof rawName === "string" ? rawName : "";
+              if (!skillName) {
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: "Missing required 'name' argument for read_skill.",
+                  is_error: true,
+                });
+                continue;
+              }
+              const body = getSkillBody(agentType, skillName);
+              if (body == null) {
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: `No skill named "${skillName}" is available for this agent. Check the Available skills manifest and pass the exact kebab-case name.`,
+                  is_error: true,
+                });
+                continue;
+              }
+              toolResultBlocks.push({
+                type: "tool_result",
+                tool_use_id: blk.id,
+                content: body,
+              });
+              if (!skillsUsed.includes(skillName)) {
+                skillsUsed.push(skillName);
+              }
+              skillLoadsThisTurn += 1;
+              continue;
+            }
+
+            if (blk.name === "create_export") {
+              if (exportsThisTurn >= MAX_EXPORTS_PER_TURN) {
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: `Export cap reached for this turn (${MAX_EXPORTS_PER_TURN}). Finish answering with the exports you've already generated.`,
+                  is_error: true,
+                });
+                continue;
+              }
+              const exportInput = parsedInput as {
+                format?: unknown;
+                filename?: unknown;
+                title?: unknown;
+                rows?: unknown;
+                markdown?: unknown;
+              };
+              const format =
+                typeof exportInput.format === "string"
+                  ? (exportInput.format.toLowerCase() as ExportFormat)
+                  : null;
+              const filename =
+                typeof exportInput.filename === "string"
+                  ? exportInput.filename
+                  : "";
+              const title =
+                typeof exportInput.title === "string"
+                  ? exportInput.title
+                  : undefined;
+              if (
+                !format ||
+                !["csv", "xlsx", "pdf"].includes(format) ||
+                !filename
+              ) {
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content:
+                    "create_export requires `format` ('csv'|'xlsx'|'pdf') and `filename`.",
+                  is_error: true,
+                });
+                continue;
+              }
+              try {
+                const rows = Array.isArray(exportInput.rows)
+                  ? (exportInput.rows as ExportRow[])
+                  : undefined;
+                const markdown =
+                  typeof exportInput.markdown === "string"
+                    ? exportInput.markdown
+                    : undefined;
+                const generated = await buildExport({
+                  format,
+                  filename,
+                  title,
+                  rows,
+                  markdown,
+                });
+                exportsGenerated.push(generated);
+                exportsThisTurn += 1;
+                // Stream the export to the client as a Vercel data-stream
+                // `2:` event so the UI can render a download card inline
+                // before the assistant's text completes.
+                enqueue("2", [
+                  {
+                    type: "export",
+                    export: {
+                      filename: generated.filename,
+                      format: generated.format,
+                      size: generated.size,
+                      downloadUrl: generated.downloadUrl,
+                      title: generated.title ?? null,
+                    },
+                  },
+                ]);
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: `Generated ${generated.filename} (${generated.size} bytes). The download card is now visible to the user in the chat. Continue with your text response — do not paste a link.`,
+                });
+              } catch (err) {
+                const message =
+                  err instanceof Error ? err.message : "Export failed.";
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: `create_export failed: ${message}`,
+                  is_error: true,
+                });
+              }
+              continue;
+            }
+
+            // Unknown tool.
+            toolResultBlocks.push({
+              type: "tool_result",
+              tool_use_id: blk.id,
+              content: `Unknown tool "${blk.name}".`,
+              is_error: true,
+            });
+          }
+
+          // Append the assistant turn (mixed text + tool_use) and the
+          // synthetic user turn (tool_result blocks) to the working history,
+          // then loop to let the model produce its actual answer.
+          workingMessages.push({
+            role: "assistant",
+            content: assistantBlocks,
+          });
+          workingMessages.push({
+            role: "user",
+            content: toolResultBlocks,
+          });
         }
 
         const finishPayload = {
@@ -382,12 +777,26 @@ export async function POST(request: NextRequest): Promise<Response> {
           content: assistantText,
           createdAt: now,
           stopReason: stopReason ?? "stop",
+          model: DEFAULT_MODEL,
           usage: {
             inputTokens,
             outputTokens,
             cacheReadInputTokens,
             cacheCreationInputTokens,
           },
+          // Telemetry: which skills the agent decided to load this turn.
+          // Empty array when none. Drives both per-message debugging and the
+          // future "Consulted: X" pill in the chat UI.
+          skillsUsed,
+          // Files the agent generated this turn via the create_export tool.
+          // Persisted so reloading the session re-renders the download cards.
+          exports: exportsGenerated.map((e) => ({
+            filename: e.filename,
+            format: e.format,
+            size: e.size,
+            downloadUrl: e.downloadUrl,
+            title: e.title ?? null,
+          })),
         });
 
         batch.update(sessionRef, {
@@ -414,6 +823,20 @@ export async function POST(request: NextRequest): Promise<Response> {
         // Increment the monthly usage counter once the model call succeeded.
         // Errors here are non-fatal: the chat already streamed back to the user.
         void incrementMonthlyUsage(session.uid, 1);
+        // Record token + USD cost for billing / overage. Same fire-and-forget
+        // semantics: a failed write here must never break the streamed reply.
+        void recordTokenUsage(
+          session.uid,
+          {
+            inputTokens,
+            outputTokens,
+            cacheReadInputTokens,
+            cacheCreationInputTokens,
+          },
+          DEFAULT_MODEL
+        ).catch((err) => {
+          console.error("[chat] recordTokenUsage failed", err);
+        });
         controller.close();
       } catch (err) {
         const errorMessage =

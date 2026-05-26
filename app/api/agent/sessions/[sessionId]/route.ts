@@ -5,11 +5,21 @@ import { getSessionUser } from "@/lib/firebase/session";
 
 export const runtime = "nodejs";
 
+interface MessageExportItem {
+  filename: string;
+  format: "csv" | "xlsx" | "pdf";
+  size: number;
+  downloadUrl: string;
+  title: string | null;
+}
+
 interface MessageItem {
   id: string;
   role: "user" | "assistant";
   content: string;
   createdAt: string | null;
+  exports?: MessageExportItem[];
+  skillsUsed?: string[];
 }
 
 function tsToIso(t: unknown): string | null {
@@ -57,12 +67,16 @@ export async function GET(
       role?: "user" | "assistant";
       content?: string;
       createdAt?: Timestamp;
+      exports?: MessageExportItem[];
+      skillsUsed?: string[];
     };
     return {
       id: d.id,
       role: m.role === "assistant" ? "assistant" : "user",
       content: m.content ?? "",
       createdAt: tsToIso(m.createdAt),
+      exports: Array.isArray(m.exports) ? m.exports : [],
+      skillsUsed: Array.isArray(m.skillsUsed) ? m.skillsUsed : [],
     };
   });
 

@@ -113,7 +113,7 @@ All paths rooted at `/users/{uid}/`. See `firestore.rules` for the deployed rule
 | `/users/{uid}/usage/{YYYY-MM}` | `{count, updatedAt, month}` | `incrementMonthlyUsage()` (admin) called by chat route on success |
 | `/users/{uid}/agents/{type}` | `Agent` (`id="type", name, type, status, description, connectedTools, createdAt, messageCount, lastMessageAt, customSystemPrompt, profile`) | `activateAgentFromConfig`, `updateAgentStatus`, `updateAgentSettings`, `updateAgentProfile` (all client) + chat route increments counters |
 | `/users/{uid}/agentSessions/{sessionId}` | `{agentId, status, createdAt, updatedAt, lastMessageAt, lastSessionId, lastMessagePreview}` | Chat route (admin) |
-| `/users/{uid}/agentSessions/{sid}/messages/{msgId}` | `{role, content, createdAt, stopReason?, usage?}` | Chat route batched commit |
+| `/users/{uid}/agentSessions/{sid}/messages/{msgId}` | `{role, content, createdAt, stopReason?, model?, usage?, skillsUsed?, exports?}` | Chat route batched commit. `skillsUsed` is the kebab-case names of skills the agent loaded this turn via the `read_skill` tool (empty when none). `exports` is the array of files the agent generated via `create_export` ({filename, format, size, downloadUrl, title}). |
 | `/users/{uid}/integrations/{providerInternalId}` | `Integration` (`id, provider, status, connectedAt, scopes, accountLabel?`) — **client-readable, no tokens** | `connectIntegration`/`disconnectIntegration` (client) + OAuth callback (admin) |
 | `/users/{uid}/integration_tokens/{providerInternalId}` | `{accessTokenCiphertext, refreshTokenCiphertext, expiresAt, updatedAt}` — **denied to client** | `saveIntegration` (admin) |
 | `/users/{uid}/files/{filenameEncoded}` | `StoredFile` (`id, name, size, type, storagePath, downloadUrl, createdAt`) | `uploadFile` (client) |
@@ -144,7 +144,7 @@ All paths rooted at `/users/{uid}/`. See `firestore.rules` for the deployed rule
 | `agent-sessions.ts` | `getSessions`, `getMessages`, `deleteSession` (client SDK; paginated batch-delete for messages) | |
 | `integrations.ts` | `subscribeIntegrations`, `connectIntegration`, `disconnectIntegration` | Client-readable metadata only |
 | `storage.ts` | `uploadFile`, `subscribeFiles`, `deleteFile`, `getDownloadUrl`, `uploadAvatar`, `BYPASS_STORAGE`, `STORAGE_LIMIT_BYTES` | Bypass mode: returns data URLs for avatars, skips Storage for files |
-| `usage.ts` | `currentMonthKey()`, `getMonthlyUsage()`, `incrementMonthlyUsage()`, `FREE_PLAN_MONTHLY_LIMIT=100`, `PAID_PLAN_MONTHLY_LIMIT=1000` | Server-only. `resolvePlan()` also checks `ADMIN_EMAILS` → paid |
+| `usage.ts` | `currentMonthKey()`, `getMonthlyUsage()`, `incrementMonthlyUsage()`, `recordTokenUsage()`, `getMonthlyTokenSummary()`, `FREE_PLAN_MONTHLY_LIMIT=100`, `PAID_PLAN_MONTHLY_LIMIT=1000`, `FREE_PLAN_MONTHLY_TOKEN_BUDGET=500_000`, `PAID_PLAN_MONTHLY_TOKEN_BUDGET=5_000_000` | Server-only. `resolvePlan()` also checks `ADMIN_EMAILS` → paid. `recordTokenUsage` writes per-month cumulative `inputTokens`/`outputTokens`/`cacheReadInputTokens`/`cacheCreationInputTokens`/`totalCostUsd` to `/users/{uid}/usage/{YYYY-MM}` for future overage billing. See `docs/TOKEN_BILLING.md`. |
 | `activity.ts` | `logActivity()`, `addActivityToBatch()` | Best-effort; never throws |
 
 ### `lib/anthropic/`
@@ -154,8 +154,11 @@ All paths rooted at `/users/{uid}/`. See `firestore.rules` for the deployed rule
 | `client.ts` | `anthropic`, `getAnthropic()` | Lazy Proxy; throws if `ANTHROPIC_API_KEY` unset |
 | `agents.ts` | `runAgent()`, `DEFAULT_MODEL="claude-sonnet-4-6"`, `DEFAULT_MAX_TOKENS=2000`, `DEFAULT_EFFORT="high"` | Non-streaming helper; chat route calls `anthropic.messages.create({stream:true})` directly |
 | `types.ts` | `AgentMessage`, `AgentSession`, `AgentConfig` (+ `profileSchema?`), `ProfileField`, `ProfileStep`, `AgentProfileSchema`, `AgentProfile`, `RunAgentContext`, `RunAgentResult`, `AgentUsage`, `AgentErrorCode` | Isomorphic (no server-only) so wizard can import |
-| `agent-configs.ts` | `AGENT_CONFIGS`, `getAgentConfig(type)`, `listAgentConfigs()` + per-agent system prompts | 3 built-ins: accountancy/operations/general. Each has `profileSchema` with wizard fields |
+| `agent-configs.ts` | `AGENT_CONFIGS`, `getAgentConfig(type)`, `listAgentConfigs()` + per-agent system prompts | 3 built-ins: accountancy/operations/general. Each has `profileSchema` with wizard fields. System prompts reference a "skill library" loaded by `skills.ts` |
 | `context.ts` | `extractTextFromFile()`, `buildContextString()`, `attachContextToMessages()`, `MAX_CONTEXT_CHARS_PER_FILE=50000` | Uses admin storage; dispatches by MIME/ext to pdf-parse v2 / xlsx / mammoth / utf8 |
+| `skills.ts` | `getSkillsForAgent(type)`, `buildSkillManifest(type)`, `getSkillBody(type, name)` | Loads `lib/anthropic/skills/<agentType>/*.md` once per Node process. Frontmatter: `name`, `description`, optional `tags`. Manifest is injected as the 3rd cached system block. Bodies loaded on demand via the `read_skill` tool in the chat route — agent calls it mid-turn, server returns the body, agent applies it to the final answer. Per-turn cap: `MAX_SKILL_LOADS_PER_TURN=3`. See `docs/SKILLS_AUTHORING.md`. |
+| `pricing.ts` | `computeCostUsd(usage, model)`, `getPricing(model)`, per-model rates in USD per 1M tokens | Single source of truth for Anthropic cost. Sonnet 4.6 + the retired `claude-sonnet-4-20250514` for historical message re-pricing. |
+| `exports.ts` | `buildExport({format, filename, rows?, markdown?, title?})` → `{filename, format, size, downloadUrl}` | Generates CSV / XLSX / PDF on demand from the `create_export` tool. Returns a data URL (5 MB cap). When Firebase Storage is enabled, swap data URL for a signed Storage URL — interface stays the same. PDF rendering via `pdfkit` (added dep). |
 
 ### `lib/integrations/`
 
@@ -360,7 +363,9 @@ Each one uses the Firebase service account JSON in the parent directory to mint 
 | Change an agent's system prompt | `lib/anthropic/agent-configs.ts` (or, for per-user overrides, `agent.customSystemPrompt` via settings sheet on `/dashboard/agents`) |
 | Add a profile field to onboarding | `lib/anthropic/agent-configs.ts` → that agent's `profileSchema.steps[].fields[]`. Field types in `lib/anthropic/types.ts` (`ProfileFieldType`) |
 | Add a new integration provider | `lib/integrations/providers.ts` (add to `PROVIDER_CARDS` with `oauth` config); env vars `<NAME>_CLIENT_ID` + `<NAME>_CLIENT_SECRET`. Generic API routes already handle it. See `docs/INTEGRATIONS_BACKLOG.md` |
-| Add a tool the agent can call | Doesn't exist yet — would need a tool-use loop layer on top of `lib/anthropic/agents.ts` `runAgent()`. Anthropic SDK supports it via `tools` param + tool runner |
+| Add a tool the agent can call | The chat route already has a tool-use loop (added for `read_skill`). To add another tool: extend the `tools` array in `app/api/agent/chat/route.ts` and add a branch in the tool-execution switch alongside `read_skill`. |
+| Add a new skill to an agent | Drop a markdown file under `lib/anthropic/skills/<agentType>/<skill-name>.md` with `name` + `description` frontmatter. `git push` → Vercel deploys → next cold start picks it up. See `docs/SKILLS_AUTHORING.md`. |
+| Update token pricing for a model | `lib/anthropic/pricing.ts` — edit the `PRICING` table. Historical messages stay re-priceable because `model` is stored on each assistant message doc. |
 | Change rate limits | `lib/firebase/usage.ts` (`FREE_PLAN_MONTHLY_LIMIT`, `PAID_PLAN_MONTHLY_LIMIT`) |
 | Change subscription gate behavior | `app/dashboard/layout.tsx` — has bypass logic |
 | Add a new env-based bypass flag | Mirror the `BYPASS_PAYMENT` pattern in `app/dashboard/layout.tsx` |
@@ -385,3 +390,14 @@ When making non-trivial changes, update this file in the same commit:
 - New gotcha learned the hard way → gotchas section
 
 **Cheap signal that this needs updating: when re-exploring the codebase to answer "where is X?", that's the moment to write it down.**
+
+## Companion docs
+
+These live alongside this map and each owns a slice of the system:
+
+- `docs/SKILLS_AUTHORING.md` — how the skill library works, how to author skills, runtime details, Vercel trace config. Update when the skill loader, manifest format, or `read_skill` tool changes.
+- `docs/TOKEN_BILLING.md` — token + USD tracking, plan budgets, the path to Stripe metered overage. Update when `pricing.ts` rates change or when the overage billing path advances.
+- `docs/FEATURE_USAGE.md` — end-user-facing behaviour of every feature. Update when a route or page changes user-visible behaviour. This becomes the source for the future public docs page.
+- `docs/FILE_RECOMMENDATIONS.md` — per-agent guidance on what files to upload and how to structure them. Update when file support, agent capability, or upload limits change.
+- `docs/HANDOFF.md` — context for a new session of Claude picking up work. Update when project state shifts meaningfully (new bypass, new deployment fact, new "what works / doesn't" line).
+- `docs/INTEGRATIONS_BACKLOG.md` — OAuth registration checklist per provider.

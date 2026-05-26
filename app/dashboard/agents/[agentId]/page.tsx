@@ -12,6 +12,8 @@ import { useParams } from "next/navigation";
 import {
   AlertTriangle,
   Bot,
+  Download,
+  FileSpreadsheet,
   FileText,
   History,
   MessageSquarePlus,
@@ -46,6 +48,14 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+export interface ChatMessageExport {
+  filename: string;
+  format: "csv" | "xlsx" | "pdf";
+  size: number;
+  downloadUrl: string;
+  title: string | null;
+}
+
 interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "error";
@@ -53,6 +63,8 @@ interface ChatMessage {
   streaming?: boolean;
   /** The text of the user message that triggered this — used to retry. */
   retryText?: string;
+  /** Downloadable files the agent generated for this turn. */
+  exports?: ChatMessageExport[];
 }
 
 interface SessionListItem {
@@ -207,10 +219,20 @@ export default function AgentChatPage() {
       const res = await fetch(`/api/agent/sessions/${targetSessionId}`);
       if (!res.ok) throw new Error("Failed to load session.");
       const data = (await res.json()) as {
-        messages: { id: string; role: "user" | "assistant"; content: string }[];
+        messages: {
+          id: string;
+          role: "user" | "assistant";
+          content: string;
+          exports?: ChatMessageExport[];
+        }[];
       };
       setSessionId(targetSessionId);
-      setMessages(data.messages.map((m) => ({ ...m })));
+      setMessages(
+        data.messages.map((m) => ({
+          ...m,
+          exports: Array.isArray(m.exports) ? m.exports : [],
+        }))
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load session.");
     }
@@ -318,6 +340,44 @@ export default function AgentChatPage() {
                   }
                   return next;
                 });
+              } catch {
+                // ignore malformed line
+              }
+            } else if (code === "2") {
+              // Vercel AI SDK "data" event — arbitrary structured payload.
+              // We use this for export download cards generated mid-stream
+              // by the create_export tool. Each entry has the shape
+              // { type: "export", export: ChatMessageExport }.
+              try {
+                const items = JSON.parse(payload) as unknown;
+                if (!Array.isArray(items)) continue;
+                const newExports: ChatMessageExport[] = [];
+                for (const item of items) {
+                  if (
+                    item &&
+                    typeof item === "object" &&
+                    (item as { type?: unknown }).type === "export"
+                  ) {
+                    const exp = (item as { export?: ChatMessageExport })
+                      .export;
+                    if (exp && typeof exp.filename === "string") {
+                      newExports.push(exp);
+                    }
+                  }
+                }
+                if (newExports.length > 0) {
+                  setMessages((prev) => {
+                    const next = [...prev];
+                    const last = next[next.length - 1];
+                    if (last?.role === "assistant") {
+                      next[next.length - 1] = {
+                        ...last,
+                        exports: [...(last.exports ?? []), ...newExports],
+                      };
+                    }
+                    return next;
+                  });
+                }
               } catch {
                 // ignore malformed line
               }
@@ -813,6 +873,7 @@ function MessageBubble({
   }
 
   const isUser = message.role === "user";
+  const hasExports = !isUser && (message.exports?.length ?? 0) > 0;
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div
@@ -835,9 +896,60 @@ function MessageBubble({
             </ReactMarkdown>
           </div>
         )}
+        {hasExports && (
+          <div className="mt-3 space-y-1.5 border-t border-border/40 pt-3">
+            {message.exports!.map((exp) => (
+              <ExportDownloadCard key={exp.filename + exp.size} export={exp} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+function ExportDownloadCard({ export: exp }: { export: ChatMessageExport }) {
+  const Icon =
+    exp.format === "pdf"
+      ? FileText
+      : exp.format === "xlsx" || exp.format === "csv"
+        ? FileSpreadsheet
+        : FileText;
+  const accent =
+    exp.format === "pdf"
+      ? "text-red-600 dark:text-red-400"
+      : exp.format === "xlsx"
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-sky-600 dark:text-sky-400";
+  const formatLabel = exp.format.toUpperCase();
+  const displayTitle = exp.title ?? exp.filename;
+  return (
+    <a
+      href={exp.downloadUrl}
+      download={exp.filename}
+      className="flex items-center gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 transition-colors hover:bg-background"
+    >
+      <div className={cn("shrink-0 rounded-md bg-muted/60 p-2", accent)}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium text-foreground">
+          {displayTitle}
+        </div>
+        <div className="truncate text-xs text-muted-foreground">
+          {exp.filename === displayTitle ? "" : `${exp.filename} · `}
+          {formatLabel} · {formatExportSize(exp.size)}
+        </div>
+      </div>
+      <Download className="h-4 w-4 shrink-0 text-muted-foreground" />
+    </a>
+  );
+}
+
+function formatExportSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function TypingIndicator() {
