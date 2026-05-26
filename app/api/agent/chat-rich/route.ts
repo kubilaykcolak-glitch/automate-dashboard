@@ -136,6 +136,9 @@ async function anthropic(
     method: opts.method ?? "GET",
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    // Honour AbortSignal so a closed client connection aborts the upstream
+    // call (especially the long-running stream). Previously declared in
+    // AnthropicCallOptions but accidentally not threaded into fetch.
     signal: opts.signal,
   });
   return res;
@@ -420,6 +423,11 @@ export async function POST(request: NextRequest): Promise<Response> {
         );
       };
 
+      // request.signal aborts when the client closes the connection.
+      // Threaded into every upstream Anthropic call so a closed tab stops
+      // the run — saves output-token cost on the (possibly 60-180s) stream.
+      const abortSignal = request.signal;
+
       try {
         // 1. Create the Anthropic session.
         const aSession = (await anthropicJson("/v1/sessions", {
@@ -429,6 +437,7 @@ export async function POST(request: NextRequest): Promise<Response> {
             environment_id: process.env.ANTHROPIC_ENVIRONMENT_ID,
             title: `${agentName} — ${new Date().toISOString().slice(0, 16)}`,
           },
+          signal: abortSignal,
         })) as { id: string };
         anthropicSessionId = aSession.id;
 
@@ -436,6 +445,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         const streamRes = await anthropic(`/v1/sessions/${aSession.id}/events/stream`, {
           method: "GET",
           acceptStream: true,
+          signal: abortSignal,
         });
         if (!streamRes.ok) {
           throw new Error(
@@ -446,6 +456,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         // 3. Post the user message to the session.
         const userPostRes = await anthropic(`/v1/sessions/${aSession.id}/events`, {
           method: "POST",
+          signal: abortSignal,
           body: {
             events: [
               {
@@ -544,6 +555,7 @@ export async function POST(request: NextRequest): Promise<Response> {
                   }
                   await anthropic(`/v1/sessions/${aSession.id}/events`, {
                     method: "POST",
+                    signal: abortSignal,
                     body: {
                       events: [
                         {
@@ -558,6 +570,7 @@ export async function POST(request: NextRequest): Promise<Response> {
                   // Unknown custom tool — report back and continue.
                   await anthropic(`/v1/sessions/${aSession.id}/events`, {
                     method: "POST",
+                    signal: abortSignal,
                     body: {
                       events: [
                         {
@@ -707,9 +720,18 @@ export async function POST(request: NextRequest): Promise<Response> {
         });
         controller.close();
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Rich stream failed.";
-        console.error("[chat-rich] stream error", err);
-        enqueue("3", message);
+        // Treat client-disconnect aborts as expected — the user closed the
+        // tab. No need to noise the logs; just close cleanly.
+        const isAbort =
+          (err instanceof Error && err.name === "AbortError") ||
+          request.signal.aborted;
+        if (isAbort) {
+          console.warn("[chat-rich] client disconnected; stream aborted");
+        } else {
+          console.error("[chat-rich] stream error", err);
+          const message = err instanceof Error ? err.message : "Rich stream failed.";
+          enqueue("3", message);
+        }
         controller.close();
       }
     },

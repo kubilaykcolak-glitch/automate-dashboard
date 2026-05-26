@@ -546,15 +546,21 @@ export async function POST(request: NextRequest): Promise<Response> {
             break;
           }
 
-          const anthropicStream = await anthropic.messages.create({
-            model: DEFAULT_MODEL,
-            max_tokens: DEFAULT_MAX_TOKENS,
-            output_config: { effort: DEFAULT_EFFORT },
-            system: systemBlocks,
-            tools,
-            messages: workingMessages,
-            stream: true,
-          });
+          const anthropicStream = await anthropic.messages.create(
+            {
+              model: DEFAULT_MODEL,
+              max_tokens: DEFAULT_MAX_TOKENS,
+              output_config: { effort: DEFAULT_EFFORT },
+              system: systemBlocks,
+              tools,
+              messages: workingMessages,
+              stream: true,
+            },
+            // If the user closes the tab mid-stream, request.signal aborts
+            // and Anthropic stops generating — saves output token cost from
+            // that point onward.
+            { signal: request.signal }
+          );
 
           // Accumulate content blocks for this iteration by their stream index.
           // A single assistant turn can interleave text and tool_use blocks.
@@ -931,9 +937,18 @@ export async function POST(request: NextRequest): Promise<Response> {
         }
         controller.close();
       } catch (err) {
-        const errorMessage =
-          err instanceof Error ? err.message : "Stream failed.";
-        enqueue("3", errorMessage);
+        // Treat client-disconnect aborts as expected — the user closed the
+        // tab. No need to surface as a hard error; just close cleanly.
+        const isAbort =
+          (err instanceof Error && err.name === "AbortError") ||
+          request.signal.aborted;
+        if (isAbort) {
+          console.warn("[chat] client disconnected; stream aborted");
+        } else {
+          const errorMessage =
+            err instanceof Error ? err.message : "Stream failed.";
+          enqueue("3", errorMessage);
+        }
         controller.close();
       }
     },
