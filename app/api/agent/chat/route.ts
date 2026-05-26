@@ -54,6 +54,19 @@ function buildUserContent(message: string, files: ContextFile[] | undefined): st
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
+  // Pre-flight: ensure the Anthropic key is configured before any work.
+  // Mid-stream "key missing" errors are confusing for the user.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return NextResponse.json(
+      {
+        error:
+          "The Anthropic API key isn't configured on this server. Add ANTHROPIC_API_KEY to .env.local (or your hosting env vars) and restart.",
+        code: "missing_api_key",
+      },
+      { status: 503 }
+    );
+  }
+
   const session = await getSessionUser();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
