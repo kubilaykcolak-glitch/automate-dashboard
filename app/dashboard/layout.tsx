@@ -23,8 +23,12 @@ export default async function DashboardLayout({
   const devBypass =
     process.env.NODE_ENV === "development" &&
     process.env.DEV_BYPASS_SUBSCRIPTION === "true";
+  // BYPASS_PAYMENT works in production too — flip to "false" or remove the env
+  // var when you're ready to start charging real customers.
+  const prodBypass = process.env.BYPASS_PAYMENT === "true";
+  const bypass = devBypass || prodBypass;
 
-  if (!devBypass && (!profile || profile.subscriptionStatus !== "active")) {
+  if (!bypass && (!profile || profile.subscriptionStatus !== "active")) {
     redirect("/pricing");
   }
 
