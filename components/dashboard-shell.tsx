@@ -41,7 +41,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
-export type Plan = "Pro" | "Inactive";
+export type Plan = "Pro" | "Inactive" | "Admin";
 
 export interface DashboardShellUser {
   fullName: string;
@@ -56,6 +56,13 @@ function isActive(pathname: string, href: string): boolean {
 }
 
 function PlanBadge({ plan }: { plan: Plan }) {
+  if (plan === "Admin") {
+    return (
+      <Badge className="bg-purple-600 text-white hover:bg-purple-600">
+        Admin
+      </Badge>
+    );
+  }
   return (
     <Badge variant={plan === "Pro" ? "default" : "secondary"}>{plan}</Badge>
   );

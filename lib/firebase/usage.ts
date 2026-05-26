@@ -31,7 +31,16 @@ function planLimit(plan: Plan): number {
 
 async function resolvePlan(uid: string): Promise<Plan> {
   const snap = await adminDb.collection("users").doc(uid).get();
-  const status = (snap.data()?.subscriptionStatus as string | undefined) ?? "none";
+  const data = snap.data() ?? {};
+  const status = (data.subscriptionStatus as string | undefined) ?? "none";
+  const email = ((data.email as string | undefined) ?? "").toLowerCase();
+
+  const adminEmails = (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (email && adminEmails.includes(email)) return "paid";
+
   return status === "active" || status === "trialing" ? "paid" : "free";
 }
 

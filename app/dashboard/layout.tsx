@@ -26,18 +26,33 @@ export default async function DashboardLayout({
   // BYPASS_PAYMENT works in production too — flip to "false" or remove the env
   // var when you're ready to start charging real customers.
   const prodBypass = process.env.BYPASS_PAYMENT === "true";
-  const bypass = devBypass || prodBypass;
+
+  const adminEmails = (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const sessionEmail =
+    typeof session.email === "string" ? session.email.toLowerCase() : "";
+  const isAdmin = sessionEmail.length > 0 && adminEmails.includes(sessionEmail);
+
+  const bypass = devBypass || prodBypass || isAdmin;
 
   if (!bypass && (!profile || profile.subscriptionStatus !== "active")) {
     redirect("/pricing");
   }
 
   const subscriptionStatus = profile?.subscriptionStatus ?? "none";
+  const plan: DashboardShellUser["plan"] = isAdmin
+    ? "Admin"
+    : subscriptionStatus === "active"
+    ? "Pro"
+    : "Inactive";
+
   const user: DashboardShellUser = {
     fullName: profile?.fullName ?? session.name ?? "",
     email: profile?.email ?? session.email ?? "",
     avatarUrl: profile?.avatarUrl ?? (session.picture as string | undefined) ?? "",
-    plan: subscriptionStatus === "active" ? "Pro" : "Inactive",
+    plan,
   };
 
   return <DashboardShell user={user}>{children}</DashboardShell>;
