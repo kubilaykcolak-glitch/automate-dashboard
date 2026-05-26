@@ -16,7 +16,7 @@ import type {
   RunAgentResult,
 } from "./types";
 
-export const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+export const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const DEFAULT_MAX_TOKENS = 2000;
 
 /**
