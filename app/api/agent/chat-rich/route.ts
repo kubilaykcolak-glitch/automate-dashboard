@@ -3,6 +3,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase/admin";
 import { getSessionUser } from "@/lib/firebase/session";
 import { getAgentConfig } from "@/lib/anthropic/agent-configs";
+import { MAX_USER_MESSAGE_CHARS } from "@/lib/anthropic/agents";
 import type { AgentProfileSchema, ProfileField } from "@/lib/anthropic/types";
 import {
   buildContextString,
@@ -191,6 +192,21 @@ export async function POST(request: NextRequest): Promise<Response> {
     return NextResponse.json(
       { error: "Both `agentId` and `message` are required." },
       { status: 400 }
+    );
+  }
+  if (typeof message !== "string") {
+    return NextResponse.json(
+      { error: "`message` must be a string." },
+      { status: 400 }
+    );
+  }
+  if (message.length > MAX_USER_MESSAGE_CHARS) {
+    return NextResponse.json(
+      {
+        error: `Message is too long (${message.length} chars). Maximum is ${MAX_USER_MESSAGE_CHARS}.`,
+        code: "message_too_long",
+      },
+      { status: 413 }
     );
   }
 

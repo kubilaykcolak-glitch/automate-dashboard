@@ -17,6 +17,17 @@ import type {
 } from "./types";
 
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+/**
+ * Hard upper bounds on user-controlled inputs. Server-enforced — the chat
+ * client caps `message` at 10,000 chars (MAX_INPUT_CHARS in the chat page)
+ * but curl bypasses it. customSystemPrompt isn't restricted client-side at
+ * all (it's authored through the agent-settings sheet), so the server is
+ * the only line of defence against a malicious or accidental 1 MB prompt
+ * that would be re-paid on every turn.
+ */
+export const MAX_USER_MESSAGE_CHARS = 10_000;
+export const MAX_CUSTOM_SYSTEM_PROMPT_CHARS = 8_000;
 /**
  * Output ceiling per turn. Big enough to fit large CSV / XLSX tool calls
  * (each row consumes output tokens as the model emits the tool_use JSON)

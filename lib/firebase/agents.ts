@@ -138,14 +138,33 @@ export async function updateAgentProfile(
  * Update user-editable fields on the agent doc — name and the optional system
  * prompt override. Passing `customSystemPrompt: null` reverts to the built-in.
  */
+/** Mirror of MAX_CUSTOM_SYSTEM_PROMPT_CHARS — kept in client lib to avoid
+ * pulling the server-only agents module into the bundle. Server-side limit
+ * is the real enforcement (see /api/agent/chat). */
+export const MAX_CUSTOM_SYSTEM_PROMPT_CHARS_CLIENT = 8_000;
+
 export async function updateAgentSettings(
   uid: string,
   agentId: string,
   updates: { name?: string; customSystemPrompt?: string | null }
 ): Promise<void> {
   const payload: Record<string, unknown> = {};
-  if (typeof updates.name === "string") payload.name = updates.name;
+  if (typeof updates.name === "string") {
+    const trimmedName = updates.name.trim().slice(0, 80);
+    if (trimmedName.length === 0) {
+      throw new Error("Agent name cannot be empty.");
+    }
+    payload.name = trimmedName;
+  }
   if (updates.customSystemPrompt !== undefined) {
+    if (
+      typeof updates.customSystemPrompt === "string" &&
+      updates.customSystemPrompt.length > MAX_CUSTOM_SYSTEM_PROMPT_CHARS_CLIENT
+    ) {
+      throw new Error(
+        `Custom system prompt is too long (${updates.customSystemPrompt.length} chars). Maximum is ${MAX_CUSTOM_SYSTEM_PROMPT_CHARS_CLIENT}.`
+      );
+    }
     payload.customSystemPrompt = updates.customSystemPrompt;
   }
   if (Object.keys(payload).length === 0) return;

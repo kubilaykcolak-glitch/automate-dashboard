@@ -8,6 +8,8 @@ import {
   DEFAULT_EFFORT,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
+  MAX_CUSTOM_SYSTEM_PROMPT_CHARS,
+  MAX_USER_MESSAGE_CHARS,
 } from "@/lib/anthropic/agents";
 import type { AgentProfileSchema, ProfileField } from "@/lib/anthropic/types";
 import {
@@ -180,6 +182,21 @@ export async function POST(request: NextRequest): Promise<Response> {
       { status: 400 }
     );
   }
+  if (typeof message !== "string") {
+    return NextResponse.json(
+      { error: "`message` must be a string." },
+      { status: 400 }
+    );
+  }
+  if (message.length > MAX_USER_MESSAGE_CHARS) {
+    return NextResponse.json(
+      {
+        error: `Message is too long (${message.length} chars). Maximum is ${MAX_USER_MESSAGE_CHARS}.`,
+        code: "message_too_long",
+      },
+      { status: 413 }
+    );
+  }
 
   const userRef = adminDb.collection("users").doc(session.uid);
 
@@ -228,11 +245,19 @@ export async function POST(request: NextRequest): Promise<Response> {
       { status: 500 }
     );
   }
-  // Per-user override takes precedence over the built-in system prompt.
-  const effectiveSystemPrompt =
+  // Per-user override takes precedence over the built-in system prompt — but
+  // is hard-clamped at MAX_CUSTOM_SYSTEM_PROMPT_CHARS so a malicious or
+  // accidentally-pasted megabyte-long prompt can't bloat every turn's bill.
+  const rawCustom =
     typeof agentData?.customSystemPrompt === "string" &&
     agentData.customSystemPrompt.trim().length > 0
       ? agentData.customSystemPrompt
+      : null;
+  const effectiveSystemPrompt =
+    rawCustom !== null
+      ? rawCustom.length > MAX_CUSTOM_SYSTEM_PROMPT_CHARS
+        ? rawCustom.slice(0, MAX_CUSTOM_SYSTEM_PROMPT_CHARS)
+        : rawCustom
       : config.systemPrompt;
 
   // Format the per-user profile as a structured block the model can reference.
