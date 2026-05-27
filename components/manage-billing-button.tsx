@@ -1,11 +1,43 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
-export function ManageBillingButton() {
+interface ManageBillingButtonProps {
+  /**
+   * True if the user has a stripeCustomerId on file (i.e. has been through
+   * Checkout at least once). When false the button stays disabled and we
+   * point at /pricing instead of calling the portal endpoint, which would
+   * 400 with "No Stripe customer on file. Start a subscription first."
+   */
+  hasStripeCustomer: boolean;
+}
+
+export function ManageBillingButton({
+  hasStripeCustomer,
+}: ManageBillingButtonProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (!hasStripeCustomer) {
+    return (
+      <div className="space-y-2">
+        <Button disabled title="Subscribe first to manage billing">
+          Manage Billing
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          You don&apos;t have a subscription yet.{" "}
+          <Link
+            href="/pricing"
+            className="font-medium text-foreground underline-offset-4 hover:underline"
+          >
+            See plans →
+          </Link>
+        </p>
+      </div>
+    );
+  }
 
   async function onClick() {
     setError(null);

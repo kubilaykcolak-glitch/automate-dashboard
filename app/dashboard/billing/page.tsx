@@ -65,7 +65,9 @@ export default async function BillingPage() {
             : "No active subscription on file."}
         </CardContent>
         <CardFooter>
-          <ManageBillingButton />
+          <ManageBillingButton
+            hasStripeCustomer={Boolean(profile.stripeCustomerId)}
+          />
         </CardFooter>
       </Card>
     </div>

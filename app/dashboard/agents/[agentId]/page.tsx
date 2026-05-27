@@ -546,13 +546,36 @@ export default function AgentChatPage() {
           return next;
         });
 
-        // Refresh session list so the new/updated session appears in the sidebar.
-        const sessionsRes = await fetch(
-          `/api/agent/sessions?agentId=${encodeURIComponent(agentId)}`
-        );
-        if (sessionsRes.ok) {
-          const data = (await sessionsRes.json()) as { sessions: SessionListItem[] };
-          setSessions(data.sessions ?? []);
+        // Update the sidebar locally rather than re-fetching. The chat
+        // route already gave us the session id (via x-session-id header
+        // and our existing setSessionId call) and we know what the
+        // last-message preview is. One less round-trip per turn.
+        const previewSource = assistantText || trimmed;
+        const preview = previewSource.slice(0, 140);
+        const nowIso = new Date().toISOString();
+        const targetSid = newSessionId ?? sessionId;
+        if (targetSid) {
+          setSessions((prev) => {
+            const existingIdx = prev.findIndex((s) => s.id === targetSid);
+            if (existingIdx >= 0) {
+              const updated: SessionListItem = {
+                ...prev[existingIdx],
+                lastMessagePreview: preview,
+                updatedAt: nowIso,
+              };
+              // Move the updated session to the top of the list.
+              return [updated, ...prev.filter((_, i) => i !== existingIdx)];
+            }
+            // New session — prepend.
+            return [
+              {
+                id: targetSid,
+                updatedAt: nowIso,
+                lastMessagePreview: preview,
+              },
+              ...prev,
+            ];
+          });
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : "Something went wrong.";
@@ -808,9 +831,9 @@ export default function AgentChatPage() {
                       }}
                       aria-label="Delete conversation"
                       title="Delete conversation"
-                      className="mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100 focus:opacity-100"
+                      className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground/50 transition-colors hover:bg-background hover:text-destructive focus:text-destructive focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </li>
                 ))}
@@ -959,15 +982,22 @@ export default function AgentChatPage() {
                   </>
                 )}
               </span>
-              {input.length > SOFT_LIMIT && (
+              {/* Char counter visible whenever the user has typed anything.
+                  Stays muted until 80% of the limit, then amber, then red
+                  at the hard cap — so users see the wall coming without
+                  needing to count keystrokes. */}
+              {input.length > 0 && (
                 <span
                   className={
                     input.length >= MAX_INPUT_CHARS
                       ? "text-destructive"
-                      : undefined
+                      : input.length >= SOFT_LIMIT
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-muted-foreground/60"
                   }
                 >
-                  {input.length.toLocaleString()} / {MAX_INPUT_CHARS.toLocaleString()}
+                  {input.length.toLocaleString()} /{" "}
+                  {MAX_INPUT_CHARS.toLocaleString()}
                 </span>
               )}
             </div>

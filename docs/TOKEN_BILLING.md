@@ -107,7 +107,16 @@ There is no UI yet. Either:
 
 ## Caveats
 
-- **Pricing table can drift.** Anthropic's published rates can change. Audit `pricing.ts` quarterly.
+- **Pricing table can drift.** Anthropic's published rates can change. **Quarterly verification checklist:**
+  1. Open https://www.anthropic.com/pricing#anthropic-api
+  2. Compare each model in `lib/anthropic/pricing.ts` against the listed rates:
+     - input per 1M
+     - output per 1M
+     - cache write (ephemeral 5-min, currently 1.25× input)
+     - cache read (currently 0.1× input)
+  3. Confirm `WEB_SEARCH_USD_PER_CALL` in `lib/firebase/usage.ts` still matches the published per-search rate.
+  4. If anything changed: bump the constants, commit with a note like "Update Anthropic pricing — Q2 2026". Historical messages keep their stored `model` so prior costs stay reconstructable at the rates that applied at the time.
+  - Add a calendar reminder (every 1st of Jan, Apr, Jul, Oct) if you don't want to rely on this doc.
 - **Output tokens come from the `message_delta` stream event.** If the stream errors mid-way, `outputTokens` may underreport. Errors are logged via `console.error` from `recordTokenUsage`. Tolerable for now.
 - **Cache creation tokens are billed at 1.25× input rate**, cache reads at 0.1×. The pricing table reflects that — don't apply the multiplier separately.
 - **`incrementMonthlyUsage(by=1)` still runs**, even though token tracking is what actually matters. It is kept for backwards compatibility with the existing rate-limit check and the legacy 100/1000 message limit. When you flip to token-based blocking, remove the count check.

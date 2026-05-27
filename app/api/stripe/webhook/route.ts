@@ -55,6 +55,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Webhook Error: ${message}` }, { status: 400 });
   }
 
+  // Idempotency: Stripe retries webhooks on 5xx for up to 3 days. Today's
+  // handlers use set({merge:true}) which is idempotent for the user doc,
+  // but anything new (counter increments, audit logs) could double-process.
+  // Record-then-handle keeps it safe: if we've seen this event.id we
+  // acknowledge immediately without re-running the body.
+  try {
+    const eventRef = adminDb.collection("stripeEvents").doc(event.id);
+    const alreadySeen = await adminDb.runTransaction(async (tx) => {
+      const snap = await tx.get(eventRef);
+      if (snap.exists) return true;
+      tx.set(eventRef, {
+        type: event.type,
+        receivedAt: FieldValue.serverTimestamp(),
+      });
+      return false;
+    });
+    if (alreadySeen) {
+      return NextResponse.json({ received: true, deduped: true });
+    }
+  } catch (err) {
+    // Idempotency dedupe is best-effort. If Firestore is unavailable we
+    // proceed — losing dedupe is preferable to dropping a legitimate event.
+    console.error("[stripe-webhook] dedupe check failed", err);
+  }
+
   try {
     switch (event.type) {
       case "checkout.session.completed": {
@@ -64,7 +89,10 @@ export async function POST(request: NextRequest) {
           (session.metadata?.firebaseUid as string | undefined) ??
           null;
         if (!uid) {
-          console.warn("checkout.session.completed missing firebase uid", session.id);
+          console.error(
+            "[stripe-webhook] checkout.session.completed missing firebase uid",
+            { sessionId: session.id }
+          );
           break;
         }
         const customerId =
@@ -99,9 +127,9 @@ export async function POST(request: NextRequest) {
         const sub = event.data.object as Stripe.Subscription;
         const uid = await resolveFirebaseUid(sub);
         if (!uid) {
-          console.warn(
-            `${event.type} could not resolve firebase uid`,
-            sub.id
+          console.error(
+            "[stripe-webhook] could not resolve firebase uid",
+            { eventType: event.type, subscriptionId: sub.id }
           );
           break;
         }
