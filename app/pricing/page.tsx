@@ -14,10 +14,11 @@ import {
 } from "@/components/ui/card";
 
 const FEATURES = [
-  "Unlimited AI agents",
-  "Connect any integration",
-  "Unlimited file uploads",
-  "Priority support",
+  "5,000,000 tokens / month — powers thousands of chats",
+  "Full UK accountancy skill library",
+  "Quick + Rich chat modes (file generation, web search, multi-step)",
+  "Connect Google Drive / Sheets and let the agent read your data",
+  "Downloadable CSV / XLSX / PDF reports",
   "Cancel anytime",
 ];
 
@@ -50,11 +51,9 @@ export default function PricingPage() {
     <div className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-12">
       <div className="w-full max-w-md space-y-6">
         <div className="text-center">
-          <h1 className="text-3xl font-semibold tracking-tight">
-            Choose your plan
-          </h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Pro</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            One simple plan. Everything you need to automate.
+            One simple plan. Subscribe to chat with your agents.
           </p>
         </div>
 

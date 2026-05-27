@@ -6,7 +6,7 @@
 
 ## Why we track tokens, not just messages
 
-The original rate limit counted messages (`/users/{uid}/usage/{YYYY-MM}.count`). That worked for a free-tier guardrail but is useless for actual cost economics:
+The original rate limit counted messages (`/users/{uid}/usage/{YYYY-MM}.count`). That worked as a simple guardrail but is useless for actual cost economics:
 
 - A one-line "what is VAT?" question and a ten-file accountancy review both count as one message.
 - A loaded chat with thousands of cached tokens is wildly more expensive than a fresh one.
@@ -89,7 +89,7 @@ The chat is **subscription-only** — there's no free monthly allowance. Two dis
 | Not subscribed | **402 Payment Required** | `subscription_required` | User exists but has no active Pro subscription. Drive them to `/pricing`. |
 | Budget exhausted | **429 Too Many Requests** | `token_budget_exceeded` | Subscribed Pro user has burned through their 5M monthly tokens. Drive them to top-up or wait for reset. |
 
-**Tokens are the single billing axis.** Earlier versions ran a separate free-tier allowance (500K/month), a message count, and a rich-turn count alongside the token budget. All gone. Pro grants a flat 5M tokens/month; Rich-mode and Quick chats both draw from the same pool. Users decide how to spend.
+**Tokens are the single billing axis.** Earlier versions ran a separate 500K monthly allowance for non-subscribers, a message count, and a rich-turn count alongside the token budget. All removed during the audit — non-subscribers no longer get any chat access, and Pro grants a flat 5M tokens/month covering everything. Rich-mode and Quick chats both draw from the same pool.
 
 The per-minute rate limit (10 req/min) is a fairness / abuse guard, not a pricing concept. It applies regardless of plan.
 

@@ -21,15 +21,14 @@ import { computeCostUsd, type TokenUsage } from "@/lib/anthropic/pricing";
  * Per-minute rate limiting (RATE_LIMIT_MAX_REQUESTS) is a separate abuse
  * guard, not a billing concept.
  *
- * The `Plan` type carries "free" only because Firestore data still has
- * users whose subscriptionStatus is "none" — that maps to "free" here
- * and means "no chat access". Callers should treat anything other than
- * "paid" as a gate, not a tier with reduced features.
+ * The `Plan` type uses "none" for users without an active subscription
+ * (no chat access) and "paid" for active Pro subscribers. There is no
+ * free tier — "none" is a gate, not a reduced-feature plan.
  */
 
 export const PAID_PLAN_MONTHLY_TOKEN_BUDGET = 5_000_000;
 
-export type Plan = "free" | "paid";
+export type Plan = "none" | "paid";
 
 /**
  * Returns the current month key in UTC. Format: "YYYY-MM". UTC keeps the
@@ -53,11 +52,11 @@ async function resolvePlan(uid: string): Promise<Plan> {
     .filter(Boolean);
   if (email && adminEmails.includes(email)) return "paid";
 
-  return status === "active" || status === "trialing" ? "paid" : "free";
+  return status === "active" || status === "trialing" ? "paid" : "none";
 }
 
-/** Public plan discriminator — used by callers that need to know free vs
- *  paid without loading the full token summary. */
+/** Public plan discriminator — used by callers that need to know whether
+ *  the user has chat access without loading the full token summary. */
 export async function getUserPlan(uid: string): Promise<Plan> {
   return resolvePlan(uid);
 }
