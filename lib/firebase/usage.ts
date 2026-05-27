@@ -3,50 +3,38 @@ import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "./admin";
 import { computeCostUsd, type TokenUsage } from "@/lib/anthropic/pricing";
 
-export const FREE_PLAN_MONTHLY_LIMIT = 100;
-export const PAID_PLAN_MONTHLY_LIMIT = 1000;
-
 /**
- * Soft token budget per month, used for billing overage rather than blocking
- * usage outright. Free users get a smaller pot; paid users a larger one.
- * Overage above the budget is tracked in `overageTokens` on the monthly
- * usage doc — future metered Stripe billing reads this field.
+ * SINGLE-AXIS BILLING MODEL.
+ *
+ * Tokens are the unit of account. A user's plan grants a monthly token
+ * budget. When they cross it, the chat routes return HTTP 429 with code
+ * "token_budget_exceeded" until either:
+ *   1. the budget resets at the start of the next UTC month, or
+ *   2. they upgrade or purchase additional tokens.
+ *
+ * Historically there were two separate quotas (message count + rich-turn
+ * count) running alongside the token budget. Those were removed during
+ * audit #32: too many gates confused the pricing narrative and made it
+ * possible to be blocked by a count limit while well under budget (or
+ * vice-versa). Tokens are now the only billing primitive the user sees.
+ *
+ * Per-minute rate limiting (RATE_LIMIT_MAX_REQUESTS) survives because it's
+ * an abuse / fairness guard, not a pricing concept.
  */
+
 export const FREE_PLAN_MONTHLY_TOKEN_BUDGET = 500_000;
 export const PAID_PLAN_MONTHLY_TOKEN_BUDGET = 5_000_000;
 
-/**
- * Per-month Rich-mode turn quota. Rich mode burns 5-10× the tokens of
- * Quick per turn, so it gets its own ceiling on top of the message-count
- * and token-budget gates. Free users get zero (the toggle exists for
- * discoverability but the API refuses). Paid users get a modest amount
- * that fits comfortably within their token budget at typical rates.
- */
-export const FREE_PLAN_MONTHLY_RICH_TURNS = 0;
-export const PAID_PLAN_MONTHLY_RICH_TURNS = 30;
-
 export type Plan = "free" | "paid";
 
-export interface MonthlyUsage {
-  month: string;
-  count: number;
-  plan: Plan;
-  limit: number;
-  remaining: number;
-}
-
 /**
- * Returns the current month key in the user's local-ish timezone using UTC
- * to keep the boundaries stable across servers. Format: "YYYY-MM".
+ * Returns the current month key in UTC. Format: "YYYY-MM". UTC keeps the
+ * boundaries stable across servers and developer machines.
  */
 export function currentMonthKey(date: Date = new Date()): string {
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
-}
-
-function planLimit(plan: Plan): number {
-  return plan === "paid" ? PAID_PLAN_MONTHLY_LIMIT : FREE_PLAN_MONTHLY_LIMIT;
 }
 
 async function resolvePlan(uid: string): Promise<Plan> {
@@ -64,52 +52,18 @@ async function resolvePlan(uid: string): Promise<Plan> {
   return status === "active" || status === "trialing" ? "paid" : "free";
 }
 
-export async function getMonthlyUsage(
-  uid: string,
-  month: string = currentMonthKey()
-): Promise<MonthlyUsage> {
-  const [plan, snap] = await Promise.all([
-    resolvePlan(uid),
-    adminDb.collection("users").doc(uid).collection("usage").doc(month).get(),
-  ]);
-  const count = (snap.data()?.count as number | undefined) ?? 0;
-  const limit = planLimit(plan);
-  return {
-    month,
-    count,
-    plan,
-    limit,
-    remaining: Math.max(0, limit - count),
-  };
-}
-
-/**
- * Atomically increments the monthly count. Returns the new count *and* the
- * plan limit so callers can react if the user just crossed it.
- */
-export async function incrementMonthlyUsage(
-  uid: string,
-  by: number = 1
-): Promise<MonthlyUsage> {
-  const month = currentMonthKey();
-  const ref = adminDb.collection("users").doc(uid).collection("usage").doc(month);
-  await ref.set(
-    {
-      month,
-      count: FieldValue.increment(by),
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
-  // Re-read to return a fresh snapshot.
-  return getMonthlyUsage(uid, month);
+/** Public plan discriminator — used by callers that need to know free vs
+ *  paid without loading the full token summary. */
+export async function getUserPlan(uid: string): Promise<Plan> {
+  return resolvePlan(uid);
 }
 
 /**
  * Records the token usage and computed USD cost of a single chat round-trip
- * onto the user's monthly usage doc. Designed to be called once per message,
- * non-blocking, after the stream completes. Errors are swallowed by the
- * caller — chat already shipped, so a failed counter write is not fatal.
+ * onto the user's monthly usage doc. Called fire-and-forget after every
+ * stream — including streams that errored mid-way — so we never lose track
+ * of tokens we already paid Anthropic for. Errors are swallowed by the
+ * caller because the chat already shipped.
  *
  * Storage shape on /users/{uid}/usage/{YYYY-MM}:
  *   - inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens
@@ -148,14 +102,18 @@ export async function recordTokenUsage(
 /** Detailed monthly token + cost summary for the dashboard / billing UI. */
 export interface MonthlyTokenSummary {
   month: string;
+  plan: Plan;
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   totalTokens: number;
   totalCostUsd: number;
-  /** Plan's monthly token budget; anything above counts as overage. */
+  /** Plan's monthly token budget — the hard gate. */
   budget: number;
+  /** How many tokens remain before the gate. 0 once exceeded. */
+  remaining: number;
+  /** How many tokens over budget. Reads as 0 until the gate is hit. */
   overageTokens: number;
 }
 
@@ -181,6 +139,7 @@ export async function getMonthlyTokenSummary(
   const total = input + output + cacheRead + cacheWrite;
   return {
     month,
+    plan,
     inputTokens: input,
     outputTokens: output,
     cacheReadInputTokens: cacheRead,
@@ -188,53 +147,9 @@ export async function getMonthlyTokenSummary(
     totalTokens: total,
     totalCostUsd: cost,
     budget,
+    remaining: Math.max(0, budget - total),
     overageTokens: Math.max(0, total - budget),
   };
-}
-
-/**
- * Rich-mode turn quota snapshot. Stored on the monthly usage doc as
- * `richTurns` (incremented by recordRichTurn). Limit derived from the plan.
- */
-export interface MonthlyRichUsage {
-  month: string;
-  plan: Plan;
-  used: number;
-  limit: number;
-  remaining: number;
-}
-
-export async function getMonthlyRichUsage(
-  uid: string,
-  month: string = currentMonthKey()
-): Promise<MonthlyRichUsage> {
-  const [plan, snap] = await Promise.all([
-    resolvePlan(uid),
-    adminDb.collection("users").doc(uid).collection("usage").doc(month).get(),
-  ]);
-  const used = (snap.data()?.richTurns as number | undefined) ?? 0;
-  const limit =
-    plan === "paid"
-      ? PAID_PLAN_MONTHLY_RICH_TURNS
-      : FREE_PLAN_MONTHLY_RICH_TURNS;
-  return { month, plan, used, limit, remaining: Math.max(0, limit - used) };
-}
-
-/**
- * Atomically increments the Rich-turn counter for the current month.
- * Called only by /api/agent/chat-rich after a successful end_turn.
- */
-export async function recordRichTurn(uid: string): Promise<void> {
-  const month = currentMonthKey();
-  const ref = adminDb.collection("users").doc(uid).collection("usage").doc(month);
-  await ref.set(
-    {
-      month,
-      richTurns: FieldValue.increment(1),
-      lastRichTurnAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
 }
 
 /**
@@ -299,11 +214,9 @@ export async function recordWebSearches(
 /**
  * Per-minute rate limit. Sliding 60-second window, counter stored at
  * /users/{uid}/rateLimits/chat. Returns the verdict and (if exceeded) how
- * many seconds the caller should wait. Implementation note: a Firestore
- * transaction is the right shape for read-then-write atomicity, but we
- * use a single set+increment with manual window detection — slightly less
- * precise under concurrent bursts but adequate for cost protection and
- * avoids transaction round-trips on the hot path.
+ * many seconds the caller should wait. This is a fairness / anti-abuse
+ * guard, distinct from the token-budget gate — fires at 10 requests/min
+ * regardless of plan.
  */
 export const RATE_LIMIT_WINDOW_SECONDS = 60;
 export const RATE_LIMIT_MAX_REQUESTS = 10;

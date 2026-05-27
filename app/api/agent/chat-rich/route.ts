@@ -12,14 +12,9 @@ import {
   type ExtractedContextFile,
 } from "@/lib/anthropic/context";
 import {
-  PAID_PLAN_MONTHLY_LIMIT,
   PAID_PLAN_MONTHLY_TOKEN_BUDGET,
   checkAndRecordRateLimit,
-  getMonthlyRichUsage,
   getMonthlyTokenSummary,
-  getMonthlyUsage,
-  incrementMonthlyUsage,
-  recordRichTurn,
   recordTokenUsage,
 } from "@/lib/firebase/usage";
 import { addActivityToBatch, logActivity } from "@/lib/firebase/activity";
@@ -230,61 +225,23 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   }
 
-  // Quota checks — three gates run before any Anthropic spend:
-  //   1. Message-count quota (shared with Quick mode)
-  //   2. Token-budget quota (shared with Quick mode)
-  //   3. Rich-turn quota (this route only) — Rich is materially more
-  //      expensive per turn, so it gets its own ceiling.
-  const [usage, tokenSummary, richUsage] = await Promise.all([
-    getMonthlyUsage(session.uid),
-    getMonthlyTokenSummary(session.uid),
-    getMonthlyRichUsage(session.uid),
-  ]);
-  if (richUsage.limit === 0) {
-    return NextResponse.json(
-      {
-        error:
-          "Rich mode isn't available on the free plan. Upgrade to Pro to use file generation, web search, and multi-step agent work.",
-        code: "rich_not_available",
-        richUsage,
-      },
-      { status: 402 } // Payment Required
-    );
-  }
-  if (richUsage.used >= richUsage.limit) {
-    return NextResponse.json(
-      {
-        error: `You've used all ${richUsage.limit} Rich-mode turns on your plan this month. Switch to Quick mode for further conversations, or contact us about additional capacity.`,
-        code: "rich_quota_exceeded",
-        richUsage,
-      },
-      { status: 429 }
-    );
-  }
-  if (usage.count >= usage.limit) {
-    return NextResponse.json(
-      {
-        error:
-          usage.plan === "paid"
-            ? `You've used all ${usage.limit} messages on your plan this month. Limit resets next month.`
-            : `You've used all ${usage.limit} free messages this month. Upgrade to Pro for ${PAID_PLAN_MONTHLY_LIMIT} messages/month.`,
-        code: "rate_limited",
-        usage,
-      },
-      { status: 429 }
-    );
-  }
+  // Single billing gate — token budget. Rich-mode turns are materially
+  // pricier per turn (each one can be 10-100K tokens vs. ~1-5K for Quick),
+  // but they all draw from the same monthly budget. No separate rich-turn
+  // counter; users decide how to spend their allowance.
+  const tokenSummary = await getMonthlyTokenSummary(session.uid);
   if (tokenSummary.totalTokens >= tokenSummary.budget) {
     return NextResponse.json(
       {
         error:
-          usage.plan === "paid"
-            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). Resets next month, or contact us for additional capacity.`
-            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month.`,
+          tokenSummary.plan === "paid"
+            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). It resets at the start of the next month. To keep chatting now, top up your tokens or contact us about a higher plan.`
+            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month, or wait for the monthly reset.`,
         code: "token_budget_exceeded",
         tokens: {
           used: tokenSummary.totalTokens,
           budget: tokenSummary.budget,
+          plan: tokenSummary.plan,
         },
       },
       { status: 429 }
@@ -440,6 +397,17 @@ export async function POST(request: NextRequest): Promise<Response> {
       // the run — saves output-token cost on the (possibly 60-180s) stream.
       const abortSignal = request.signal;
 
+      // Token counters hoisted to function scope so the `finally` block can
+      // record whatever we accumulated, even on errored / aborted streams.
+      // Chat-rich pulls totals from a post-stream `sessions/{id}` retrieve
+      // call rather than from message_start events; we try that call from
+      // both the success path AND the finally block.
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let cacheReadInputTokens = 0;
+      let cacheCreationInputTokens = 0;
+      let createdAnthropicSessionId: string | null = null;
+
       try {
         // 1. Create the Anthropic session.
         const aSession = (await anthropicJson("/v1/sessions", {
@@ -452,6 +420,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           signal: abortSignal,
         })) as { id: string };
         anthropicSessionId = aSession.id;
+        createdAnthropicSessionId = aSession.id;
 
         // 2. Open the event stream FIRST so we don't miss early events.
         const streamRes = await anthropic(`/v1/sessions/${aSession.id}/events/stream`, {
@@ -605,10 +574,6 @@ export async function POST(request: NextRequest): Promise<Response> {
         });
 
         // 5. Retrieve usage from the session detail.
-        let inputTokens = 0;
-        let outputTokens = 0;
-        let cacheReadInputTokens = 0;
-        let cacheCreationInputTokens = 0;
         try {
           const sessionDetail = (await anthropicJson(
             `/v1/sessions/${aSession.id}`
@@ -709,27 +674,6 @@ export async function POST(request: NextRequest): Promise<Response> {
         });
 
         await batch.commit();
-
-        // 7. Increment counters and record token usage.
-        void incrementMonthlyUsage(session.uid, 1);
-        // Rich-mode turn counter is gated at the top of the route. Increment
-        // only here, after end_turn — failed/mid-stream turns don't burn quota.
-        void recordRichTurn(session.uid).catch((err) => {
-          console.error("[chat-rich] recordRichTurn failed", err);
-        });
-        void recordTokenUsage(
-          session.uid,
-          {
-            inputTokens,
-            outputTokens,
-            cacheReadInputTokens,
-            cacheCreationInputTokens,
-          },
-          "claude-sonnet-4-6"
-        ).catch((err) => {
-          console.error("[chat-rich] recordTokenUsage failed", err);
-        });
-        controller.close();
       } catch (err) {
         // Treat client-disconnect aborts as expected — the user closed the
         // tab. No need to noise the logs; just close cleanly.
@@ -742,6 +686,69 @@ export async function POST(request: NextRequest): Promise<Response> {
           console.error("[chat-rich] stream error", err);
           const message = err instanceof Error ? err.message : "Rich stream failed.";
           enqueue("3", message);
+        }
+      } finally {
+        // Token recording runs unconditionally — even on errored or aborted
+        // streams. Anthropic has billed us for any tokens that already
+        // streamed before the failure, so the user must see them in their
+        // usage. Closes audit finding #16.
+        //
+        // If the success path's usage retrieval didn't run (we errored
+        // before line ~570), try it here as a last-ditch effort. Best
+        // effort — failures are logged but don't propagate.
+        if (
+          inputTokens === 0 &&
+          outputTokens === 0 &&
+          cacheReadInputTokens === 0 &&
+          cacheCreationInputTokens === 0 &&
+          createdAnthropicSessionId
+        ) {
+          try {
+            const detail = (await anthropicJson(
+              `/v1/sessions/${createdAnthropicSessionId}`
+            )) as {
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_read_input_tokens?: number;
+                cache_creation?: {
+                  ephemeral_5m_input_tokens?: number;
+                  ephemeral_1h_input_tokens?: number;
+                };
+              };
+            };
+            const u = detail.usage ?? {};
+            inputTokens = u.input_tokens ?? 0;
+            outputTokens = u.output_tokens ?? 0;
+            cacheReadInputTokens = u.cache_read_input_tokens ?? 0;
+            cacheCreationInputTokens =
+              (u.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
+              (u.cache_creation?.ephemeral_1h_input_tokens ?? 0);
+          } catch (err) {
+            console.error(
+              "[chat-rich] post-failure usage retrieval failed",
+              err
+            );
+          }
+        }
+        if (
+          inputTokens > 0 ||
+          outputTokens > 0 ||
+          cacheReadInputTokens > 0 ||
+          cacheCreationInputTokens > 0
+        ) {
+          void recordTokenUsage(
+            session.uid,
+            {
+              inputTokens,
+              outputTokens,
+              cacheReadInputTokens,
+              cacheCreationInputTokens,
+            },
+            "claude-sonnet-4-6"
+          ).catch((err) => {
+            console.error("[chat-rich] recordTokenUsage failed", err);
+          });
         }
         controller.close();
       }

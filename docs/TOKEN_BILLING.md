@@ -82,9 +82,11 @@ FREE_PLAN_MONTHLY_TOKEN_BUDGET   =   500,000 tokens
 PAID_PLAN_MONTHLY_TOKEN_BUDGET   = 5,000,000 tokens
 ```
 
-These are **hard** budgets — once a user crosses their plan's token budget, the chat routes return HTTP 429 with `code: "token_budget_exceeded"` until the next monthly reset (or a plan upgrade). Two independent gates run side by side: the legacy `count` (messages: 100 free / 1000 paid) and the token budget. Either tripping blocks the chat.
+These are **hard** budgets — once a user crosses their plan's token budget, the chat routes return HTTP 429 with `code: "token_budget_exceeded"` until either the next monthly reset (1st of the month, UTC) or a plan upgrade / token top-up.
 
-(Originally these were informational only; tightened to hard-enforce after audit finding #3 because a few large file uploads could otherwise burn millions of tokens within the message-count quota.)
+**Tokens are the single billing axis.** Earlier versions ran multiple parallel quotas (a message count, a rich-turn count, and the token budget) side-by-side. That confused the pricing narrative and could leave a user blocked by a count limit while well under budget. Tokens now own the entire surface — see audit finding #32. Rich-mode turns and Quick chats both draw from the same budget; users decide how to spend.
+
+The per-minute rate limit (10 req/min) survives because it's an abuse / fairness guard, not a pricing concept. It applies regardless of plan.
 
 `getMonthlyTokenSummary(uid)` returns the breakdown including `overageTokens = max(0, totalTokens - budget)` for a future billing UI to read.
 

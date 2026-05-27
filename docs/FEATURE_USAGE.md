@@ -46,8 +46,8 @@ First time you open an active agent, a wizard runs through that agent's profile 
 - Sidebar shows the conversation history for that agent.
 - Markdown rendering with code highlighting.
 - Retry on transient errors.
-- Per-message rate limit: 100 messages/month free, 1000 messages/month paid (or admin).
-- Token usage is recorded against the user's monthly budget. See `docs/TOKEN_BILLING.md`.
+- **Single-axis billing — tokens.** Each plan grants a monthly token budget (500K free, 5M Pro). Tokens drawn by all chat activity, regardless of mode. When the budget is exhausted, the chat refuses further requests until the next monthly reset (1st of the month UTC) or a plan upgrade / token top-up. See `docs/TOKEN_BILLING.md`.
+- Per-minute rate limit: 10 requests/min/user (abuse guard, not billing).
 
 ### Quick mode vs Rich mode
 
@@ -62,12 +62,7 @@ Each assistant message is tagged with which mode produced it. When the agent run
 
 Only the Accountancy agent supports rich mode today. Operations and General fall back to quick mode regardless of the toggle.
 
-**Rich-mode quota.** Rich mode is metered separately from the regular message-count quota:
-- **Free plan**: 0 Rich turns/month — the toggle exists for discoverability but sending a Rich-mode message returns HTTP 402 with an upgrade prompt.
-- **Pro plan**: 30 Rich turns/month. Once exhausted, further Rich-mode sends return HTTP 429; Quick-mode chats continue normally.
-- **Admin**: same quota as Pro (30/month) — not unlimited, since each turn costs real money. Bump `PAID_PLAN_MONTHLY_RICH_TURNS` in `lib/firebase/usage.ts` if you need more.
-
-Quota is incremented only after a Rich turn finishes with `end_turn`. Failed or mid-stream-cancelled turns don't burn quota. Visible in the Usage card on `/dashboard/billing`.
+**Rich and Quick share the same token budget.** Rich-mode turns burn 5-10× more tokens per turn than Quick, so users naturally get fewer of them on the same plan — but there's no separate quota. Whichever mode you use, it draws from your monthly token budget. Free users can technically use Rich, but a single rich turn can eat 10-20% of their 500K budget, so it's effectively a Pro-tier feature in practice.
 
 ### Web search
 

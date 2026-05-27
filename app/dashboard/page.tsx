@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { UsageStat } from "@/components/usage-stat";
-import { getMonthlyUsage } from "@/lib/firebase/usage";
+import { getMonthlyTokenSummary } from "@/lib/firebase/usage";
 import type { UserProfile } from "@/types/database";
 
 interface ActivityEntry {
@@ -96,14 +96,14 @@ export default async function DashboardPage() {
   if (!session) return null;
 
   const userRef = adminDb.collection("users").doc(session.uid);
-  const [profileSnap, agents, integrations, files, activity, usage] =
+  const [profileSnap, agents, integrations, files, activity, tokens] =
     await Promise.all([
       userRef.get(),
       countCollection(session.uid, "agents"),
       countCollection(session.uid, "integrations"),
       countCollection(session.uid, "files"),
       fetchRecentActivity(session.uid),
-      getMonthlyUsage(session.uid),
+      getMonthlyTokenSummary(session.uid),
     ]);
 
   const profile = (profileSnap.data() as Partial<UserProfile> | undefined) ?? {};
@@ -135,7 +135,7 @@ export default async function DashboardPage() {
           value={files}
           icon={<Files className="h-4 w-4" />}
         />
-        <UsageStat usage={usage} />
+        <UsageStat tokens={tokens} />
       </div>
 
       <section className="space-y-3">

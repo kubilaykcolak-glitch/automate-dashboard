@@ -20,12 +20,9 @@ import {
   type ExtractedContextFile,
 } from "@/lib/anthropic/context";
 import {
-  PAID_PLAN_MONTHLY_LIMIT,
   PAID_PLAN_MONTHLY_TOKEN_BUDGET,
   checkAndRecordRateLimit,
   getMonthlyTokenSummary,
-  getMonthlyUsage,
-  incrementMonthlyUsage,
   recordTokenUsage,
   recordWebSearches,
 } from "@/lib/firebase/usage";
@@ -199,38 +196,21 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   }
 
-  // 0. Quota checks — fail fast before any Anthropic spend.
-  // Two independent gates: monthly message count, and monthly token budget.
-  // Either one tripping returns 429 with a clear code so the client can
-  // distinguish (and a future UI can route appropriately).
-  const [usage, tokenSummary] = await Promise.all([
-    getMonthlyUsage(session.uid),
-    getMonthlyTokenSummary(session.uid),
-  ]);
-  if (usage.count >= usage.limit) {
-    return NextResponse.json(
-      {
-        error:
-          usage.plan === "paid"
-            ? `You've used all ${usage.limit} messages on your plan this month. Limit resets next month.`
-            : `You've used all ${usage.limit} free messages this month. Upgrade to Pro for ${PAID_PLAN_MONTHLY_LIMIT} messages/month.`,
-        code: "rate_limited",
-        usage,
-      },
-      { status: 429 }
-    );
-  }
+  // Single billing gate — token budget. Fails fast before any Anthropic
+  // spend. The client surfaces the response to drive an upgrade / top-up CTA.
+  const tokenSummary = await getMonthlyTokenSummary(session.uid);
   if (tokenSummary.totalTokens >= tokenSummary.budget) {
     return NextResponse.json(
       {
         error:
-          usage.plan === "paid"
-            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). Resets next month, or contact us for additional capacity.`
-            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month.`,
+          tokenSummary.plan === "paid"
+            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). It resets at the start of the next month. To keep chatting now, top up your tokens or contact us about a higher plan.`
+            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month, or wait for the monthly reset.`,
         code: "token_budget_exceeded",
         tokens: {
           used: tokenSummary.totalTokens,
           budget: tokenSummary.budget,
+          plan: tokenSummary.plan,
         },
       },
       { status: 429 }
@@ -910,32 +890,6 @@ export async function POST(request: NextRequest): Promise<Response> {
         });
 
         await batch.commit();
-
-        // Increment the monthly usage counter once the model call succeeded.
-        // Errors here are non-fatal: the chat already streamed back to the user.
-        void incrementMonthlyUsage(session.uid, 1);
-        // Record token + USD cost for billing / overage. Same fire-and-forget
-        // semantics: a failed write here must never break the streamed reply.
-        void recordTokenUsage(
-          session.uid,
-          {
-            inputTokens,
-            outputTokens,
-            cacheReadInputTokens,
-            cacheCreationInputTokens,
-          },
-          DEFAULT_MODEL
-        ).catch((err) => {
-          console.error("[chat] recordTokenUsage failed", err);
-        });
-        // Anthropic's web_search is billed separately ($10/1000 calls).
-        // Tracked in its own counter so the Usage card shows true cost.
-        if (webSearches > 0) {
-          void recordWebSearches(session.uid, webSearches).catch((err) => {
-            console.error("[chat] recordWebSearches failed", err);
-          });
-        }
-        controller.close();
       } catch (err) {
         // Treat client-disconnect aborts as expected — the user closed the
         // tab. No need to surface as a hard error; just close cleanly.
@@ -948,6 +902,36 @@ export async function POST(request: NextRequest): Promise<Response> {
           const errorMessage =
             err instanceof Error ? err.message : "Stream failed.";
           enqueue("3", errorMessage);
+        }
+      } finally {
+        // Token recording runs unconditionally — even on errored or
+        // aborted streams. Anthropic has billed us for the input tokens
+        // and any output tokens that streamed before the failure; the
+        // user must see them in their usage. This closes audit finding
+        // #16 (cost leak on mid-stream errors).
+        if (
+          inputTokens > 0 ||
+          outputTokens > 0 ||
+          cacheReadInputTokens > 0 ||
+          cacheCreationInputTokens > 0
+        ) {
+          void recordTokenUsage(
+            session.uid,
+            {
+              inputTokens,
+              outputTokens,
+              cacheReadInputTokens,
+              cacheCreationInputTokens,
+            },
+            DEFAULT_MODEL
+          ).catch((err) => {
+            console.error("[chat] recordTokenUsage failed", err);
+          });
+        }
+        if (webSearches > 0) {
+          void recordWebSearches(session.uid, webSearches).catch((err) => {
+            console.error("[chat] recordWebSearches failed", err);
+          });
         }
         controller.close();
       }
