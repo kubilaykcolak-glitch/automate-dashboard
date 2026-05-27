@@ -178,6 +178,7 @@ All paths rooted at `/users/{uid}/`. See `firestore.rules` for the deployed rule
 | `oauth.ts` | `generateState()`, `buildAuthUrl()`, `exchangeCodeForTokens()`, `revokeToken()`, `callbackUrl()`, `STATE_COOKIE_NAME="oauth_state"` | State cookie expires 10min |
 | `providers.ts` | `PROVIDER_CARDS`, `getProviderByInternalId()`, `getProviderByCardId()`, `getEnabledInternalIds()` | UI catalog with `internalId` mapping. Gmail/Sheets/Drive all map to `internalId: "google"` (one OAuth grant, multiple scopes) |
 | `store.ts` | `saveIntegration()`, `loadTokens()`, `clearIntegration()` | Writes metadata + token to separate Firestore paths |
+| `google.ts` | `getValidGoogleAccessToken()`, `googleDriveSearch()`, `googleSheetsListTabs()`, `googleSheetsRead()`, `userHasGoogleConnected()`, `GoogleIntegrationError` | Runtime layer that the chat routes' Google tools sit on. Handles token expiry + refresh transparently, writes the refreshed access_token back to Firestore, returns typed errors (not_connected / no_refresh_token / refresh_failed / api_error) the chat route can pass straight to the agent as tool_result text. |
 
 ### `lib/`
 

@@ -34,6 +34,13 @@ import {
   type ExportRow,
   type GeneratedExport,
 } from "@/lib/anthropic/exports";
+import {
+  GoogleIntegrationError,
+  googleDriveSearch,
+  googleSheetsListTabs,
+  googleSheetsRead,
+  userHasGoogleConnected,
+} from "@/lib/integrations/google";
 
 /**
  * Per-turn ceiling on read_skill tool calls. Keeps cost bounded and prevents
@@ -47,6 +54,13 @@ const MAX_SKILL_LOADS_PER_TURN = 3;
  * for a "Q1-Q4 VAT returns + annual summary" style deliverable.
  */
 const MAX_EXPORTS_PER_TURN = 5;
+
+/**
+ * Per-turn ceiling on Google integration tool calls. Search + sheet reads
+ * each cost a Google API call (free at our scale, but bound it anyway to
+ * stop a runaway agent from spelunking through the user's whole Drive).
+ */
+const MAX_GOOGLE_CALLS_PER_TURN = 6;
 
 /**
  * Per-turn ceiling on Anthropic's server-side web_search tool. The tool is
@@ -216,6 +230,11 @@ export async function POST(request: NextRequest): Promise<Response> {
       { status: 429 }
     );
   }
+
+  // Detect connected integrations so we can register their tools conditionally.
+  // Cheap doc existence check; no token decrypt unless the agent actually
+  // calls a Google tool later.
+  const googleConnected = await userHasGoogleConnected(session.uid);
 
   // 1. Load the agent document and resolve the system prompt via its type.
   const agentRef = userRef.collection("agents").doc(agentId);
@@ -502,6 +521,71 @@ export async function POST(request: NextRequest): Promise<Response> {
           },
         });
       }
+      // Google integration tools — registered only when the user has
+      // connected Google in /dashboard/integrations. Without this conditional
+      // the agent would try to use them on disconnected users and get a
+      // useless 'not_connected' tool_result every time.
+      if (googleConnected) {
+        tools.push({
+          name: "google_drive_search",
+          description:
+            "Search the user's Google Drive for files. Defaults to Google Sheets (the most common need for the accountancy agent). Returns up to 10 files matching the name query, newest first, with their IDs you can pass to google_sheets_read. Use this when the user references a specific spreadsheet by name ('open my 2025 bank statement', 'find the VAT log') and you don't already have its ID.",
+          input_schema: {
+            type: "object" as const,
+            properties: {
+              query: {
+                type: "string",
+                description:
+                  "Substring to match against file names. Case-insensitive. E.g. '2025 bank', 'invoice log'.",
+              },
+              mime_type: {
+                type: "string",
+                description:
+                  "Optional. Default is Google Sheets. Pass 'all' to search every file type, or one of: 'sheet', 'doc', 'pdf'.",
+                enum: ["sheet", "doc", "pdf", "all"],
+              },
+            },
+            required: ["query"],
+          },
+        });
+        tools.push({
+          name: "google_sheets_list_tabs",
+          description:
+            "List the tabs (sheets) inside a Google Sheets workbook. Use this BEFORE google_sheets_read when you don't know which tab to read — the tab title is part of the read range, e.g. 'Q1 2025!A1:Z1000'. Pass the spreadsheet ID returned by google_drive_search.",
+          input_schema: {
+            type: "object" as const,
+            properties: {
+              spreadsheet_id: {
+                type: "string",
+                description:
+                  "The spreadsheet ID, taken from the 'id' field of a google_drive_search result.",
+              },
+            },
+            required: ["spreadsheet_id"],
+          },
+        });
+        tools.push({
+          name: "google_sheets_read",
+          description:
+            "Read cell values from a Google Sheets workbook. Returns a 2D array of cell values (numbers as numbers, strings as strings). If `range` is omitted, reads the first 1,000 rows of the first tab. Cap is 1,000 rows per call to keep context bounded — if you need more, call again with a tighter range (e.g. 'Sheet1!A1001:Z2000').\n\nUse for: pulling user's actual financial data into the conversation when they reference a connected spreadsheet, rather than asking them to download + re-upload as CSV.",
+          input_schema: {
+            type: "object" as const,
+            properties: {
+              spreadsheet_id: {
+                type: "string",
+                description:
+                  "The spreadsheet ID, taken from the 'id' field of a google_drive_search result.",
+              },
+              range: {
+                type: "string",
+                description:
+                  "Optional A1-notation range, e.g. 'Sheet1!A1:E100' or just 'Sheet1' for the whole tab. Defaults to the first tab's A1:Z1000.",
+              },
+            },
+            required: ["spreadsheet_id"],
+          },
+        });
+      }
 
       // Working copy of the conversation history; the tool-use loop appends
       // assistant turns (with tool_use blocks) and synthetic user turns
@@ -511,6 +595,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       let iterations = 0;
       let skillLoadsThisTurn = 0;
       let exportsThisTurn = 0;
+      let googleCallsThisTurn = 0;
 
       try {
         // Tool-use loop. Most turns exit on the first pass (no tool call,
@@ -792,6 +877,159 @@ export async function POST(request: NextRequest): Promise<Response> {
                   type: "tool_result",
                   tool_use_id: blk.id,
                   content: `create_export failed: ${message}`,
+                  is_error: true,
+                });
+              }
+              continue;
+            }
+
+            // Google integration tools share an over-the-quota check and
+            // an error-mapping path. Each is small in itself.
+            const GOOGLE_TOOL_NAMES = [
+              "google_drive_search",
+              "google_sheets_list_tabs",
+              "google_sheets_read",
+            ] as const;
+            if (
+              (GOOGLE_TOOL_NAMES as readonly string[]).includes(blk.name ?? "")
+            ) {
+              if (!googleConnected) {
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content:
+                    "Google isn't connected for this user. Tell the user to connect Google via /dashboard/integrations and try again.",
+                  is_error: true,
+                });
+                continue;
+              }
+              if (googleCallsThisTurn >= MAX_GOOGLE_CALLS_PER_TURN) {
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: `Google API call cap reached for this turn (${MAX_GOOGLE_CALLS_PER_TURN}). Answer the user with what you already have, or ask them to clarify what they want pulled.`,
+                  is_error: true,
+                });
+                continue;
+              }
+              googleCallsThisTurn += 1;
+              try {
+                let resultText: string;
+                if (blk.name === "google_drive_search") {
+                  const input = parsedInput as {
+                    query?: unknown;
+                    mime_type?: unknown;
+                  };
+                  const query =
+                    typeof input.query === "string" ? input.query : "";
+                  if (!query) {
+                    throw new GoogleIntegrationError(
+                      "api_error",
+                      "google_drive_search requires a `query` string."
+                    );
+                  }
+                  const mimeAlias =
+                    typeof input.mime_type === "string"
+                      ? input.mime_type
+                      : "sheet";
+                  const mimeType =
+                    mimeAlias === "all"
+                      ? null
+                      : mimeAlias === "doc"
+                        ? "application/vnd.google-apps.document"
+                        : mimeAlias === "pdf"
+                          ? "application/pdf"
+                          : "application/vnd.google-apps.spreadsheet";
+                  const { files } = await googleDriveSearch(session.uid, {
+                    query,
+                    mimeType,
+                  });
+                  resultText = JSON.stringify(
+                    files.map((f) => ({
+                      id: f.id,
+                      name: f.name,
+                      mimeType: f.mimeType,
+                      modifiedTime: f.modifiedTime,
+                    })),
+                    null,
+                    2
+                  );
+                } else if (blk.name === "google_sheets_list_tabs") {
+                  const input = parsedInput as { spreadsheet_id?: unknown };
+                  const sid =
+                    typeof input.spreadsheet_id === "string"
+                      ? input.spreadsheet_id
+                      : "";
+                  if (!sid) {
+                    throw new GoogleIntegrationError(
+                      "api_error",
+                      "google_sheets_list_tabs requires a `spreadsheet_id`."
+                    );
+                  }
+                  const { title, tabs } = await googleSheetsListTabs(
+                    session.uid,
+                    sid
+                  );
+                  resultText = JSON.stringify({ title, tabs }, null, 2);
+                } else {
+                  // google_sheets_read
+                  const input = parsedInput as {
+                    spreadsheet_id?: unknown;
+                    range?: unknown;
+                  };
+                  const sid =
+                    typeof input.spreadsheet_id === "string"
+                      ? input.spreadsheet_id
+                      : "";
+                  if (!sid) {
+                    throw new GoogleIntegrationError(
+                      "api_error",
+                      "google_sheets_read requires a `spreadsheet_id`."
+                    );
+                  }
+                  const range =
+                    typeof input.range === "string" ? input.range : undefined;
+                  const read = await googleSheetsRead(session.uid, {
+                    spreadsheetId: sid,
+                    range,
+                  });
+                  // Compact CSV-ish for the agent — much smaller than JSON
+                  // for typical sheet sizes.
+                  const csv = read.values
+                    .map((row) =>
+                      row
+                        .map((v) =>
+                          v === null || v === undefined ? "" : String(v)
+                        )
+                        .join(",")
+                    )
+                    .join("\n");
+                  const suffix =
+                    read.truncatedRows > 0
+                      ? `\n\n[truncated — ${read.truncatedRows} more rows after the cap of 1,000. Call again with a tighter range to read more.]`
+                      : "";
+                  resultText = `Range: ${read.range}\nRows: ${read.values.length}\n\n${csv}${suffix}`;
+                }
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: resultText,
+                });
+              } catch (err) {
+                const msg =
+                  err instanceof GoogleIntegrationError
+                    ? `${err.code}: ${err.message}`
+                    : err instanceof Error
+                      ? err.message
+                      : "Google tool failed";
+                console.error("[chat] Google tool failed", {
+                  tool: blk.name,
+                  error: msg,
+                });
+                toolResultBlocks.push({
+                  type: "tool_result",
+                  tool_use_id: blk.id,
+                  content: msg,
                   is_error: true,
                 });
               }

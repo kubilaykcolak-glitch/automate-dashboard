@@ -23,6 +23,16 @@ import {
   type ExportFormat,
   type GeneratedExport,
 } from "@/lib/anthropic/exports";
+import {
+  GoogleIntegrationError,
+  googleDriveSearch,
+  googleSheetsListTabs,
+  googleSheetsRead,
+  userHasGoogleConnected,
+} from "@/lib/integrations/google";
+
+/** Per-turn ceiling on Google API calls — matches the Quick-mode cap. */
+const MAX_GOOGLE_CALLS_PER_TURN = 6;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -288,6 +298,11 @@ export async function POST(request: NextRequest): Promise<Response> {
     ? formatProfileBlock(agentData?.profile ?? null, config.profileSchema ?? null)
     : null;
 
+  // Detect connected integrations so the custom-tool dispatcher can refuse
+  // unconnected providers immediately. The Managed Agent itself declares
+  // the tools regardless — this is the runtime gate.
+  const googleConnected = await userHasGoogleConnected(session.uid);
+
   // Resolve / create the Firestore session doc (same pattern as the standard route).
   const sessionsCol = userRef.collection("agentSessions");
   const sessionRef = rawSessionId ? sessionsCol.doc(rawSessionId) : sessionsCol.doc();
@@ -407,6 +422,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       let cacheReadInputTokens = 0;
       let cacheCreationInputTokens = 0;
       let createdAnthropicSessionId: string | null = null;
+      let googleCallsThisTurn = 0;
 
       try {
         // 1. Create the Anthropic session.
@@ -543,6 +559,32 @@ export async function POST(request: NextRequest): Promise<Response> {
                           type: "user.custom_tool_result",
                           custom_tool_use_id: eid,
                           content: [{ type: "text", text: result.message }],
+                        },
+                      ],
+                    },
+                  });
+                } else if (
+                  toolName === "google_drive_search" ||
+                  toolName === "google_sheets_list_tabs" ||
+                  toolName === "google_sheets_read"
+                ) {
+                  const resultText = await handleGoogleTool({
+                    uid: session.uid,
+                    toolName,
+                    input: toolInput,
+                    googleConnected,
+                    callsSoFar: googleCallsThisTurn,
+                  });
+                  if (resultText.callConsumed) googleCallsThisTurn += 1;
+                  await anthropic(`/v1/sessions/${aSession.id}/events`, {
+                    method: "POST",
+                    signal: abortSignal,
+                    body: {
+                      events: [
+                        {
+                          type: "user.custom_tool_result",
+                          custom_tool_use_id: eid,
+                          content: [{ type: "text", text: resultText.text }],
                         },
                       ],
                     },
@@ -768,6 +810,117 @@ export async function POST(request: NextRequest): Promise<Response> {
 // ─────────────────────────────────────────────────────────────────────────────
 // create_export handler — bridges the agent's tool call to our exports lib.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Single dispatcher for the three Google integration tools. Returns the
+ * text to send back as the custom_tool_result, plus a flag indicating
+ * whether this counts against the per-turn cap (it doesn't when we refuse
+ * the call up front).
+ */
+async function handleGoogleTool(params: {
+  uid: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  googleConnected: boolean;
+  callsSoFar: number;
+}): Promise<{ text: string; callConsumed: boolean }> {
+  const { uid, toolName, input, googleConnected, callsSoFar } = params;
+  if (!googleConnected) {
+    return {
+      text: "Google isn't connected for this user. Tell them to connect Google via /dashboard/integrations and try again.",
+      callConsumed: false,
+    };
+  }
+  if (callsSoFar >= MAX_GOOGLE_CALLS_PER_TURN) {
+    return {
+      text: `Google API call cap reached for this turn (${MAX_GOOGLE_CALLS_PER_TURN}). Answer with what you already have.`,
+      callConsumed: false,
+    };
+  }
+  try {
+    if (toolName === "google_drive_search") {
+      const query = typeof input.query === "string" ? input.query : "";
+      if (!query) {
+        throw new GoogleIntegrationError(
+          "api_error",
+          "google_drive_search requires a `query` string."
+        );
+      }
+      const mimeAlias =
+        typeof input.mime_type === "string" ? input.mime_type : "sheet";
+      const mimeType =
+        mimeAlias === "all"
+          ? null
+          : mimeAlias === "doc"
+            ? "application/vnd.google-apps.document"
+            : mimeAlias === "pdf"
+              ? "application/pdf"
+              : "application/vnd.google-apps.spreadsheet";
+      const { files } = await googleDriveSearch(uid, { query, mimeType });
+      return {
+        text: JSON.stringify(
+          files.map((f) => ({
+            id: f.id,
+            name: f.name,
+            mimeType: f.mimeType,
+            modifiedTime: f.modifiedTime,
+          })),
+          null,
+          2
+        ),
+        callConsumed: true,
+      };
+    }
+    if (toolName === "google_sheets_list_tabs") {
+      const sid =
+        typeof input.spreadsheet_id === "string" ? input.spreadsheet_id : "";
+      if (!sid) {
+        throw new GoogleIntegrationError(
+          "api_error",
+          "google_sheets_list_tabs requires a `spreadsheet_id`."
+        );
+      }
+      const { title, tabs } = await googleSheetsListTabs(uid, sid);
+      return {
+        text: JSON.stringify({ title, tabs }, null, 2),
+        callConsumed: true,
+      };
+    }
+    // google_sheets_read
+    const sid =
+      typeof input.spreadsheet_id === "string" ? input.spreadsheet_id : "";
+    if (!sid) {
+      throw new GoogleIntegrationError(
+        "api_error",
+        "google_sheets_read requires a `spreadsheet_id`."
+      );
+    }
+    const range = typeof input.range === "string" ? input.range : undefined;
+    const read = await googleSheetsRead(uid, { spreadsheetId: sid, range });
+    const csv = read.values
+      .map((row) =>
+        row.map((v) => (v === null || v === undefined ? "" : String(v))).join(",")
+      )
+      .join("\n");
+    const suffix =
+      read.truncatedRows > 0
+        ? `\n\n[truncated — ${read.truncatedRows} more rows after the 1,000-row cap. Call again with a tighter range.]`
+        : "";
+    return {
+      text: `Range: ${read.range}\nRows: ${read.values.length}\n\n${csv}${suffix}`,
+      callConsumed: true,
+    };
+  } catch (err) {
+    const msg =
+      err instanceof GoogleIntegrationError
+        ? `${err.code}: ${err.message}`
+        : err instanceof Error
+          ? err.message
+          : "Google tool failed";
+    console.error("[chat-rich] Google tool failed", { tool: toolName, error: msg });
+    return { text: msg, callConsumed: true };
+  }
+}
 
 async function handleCreateExport(
   input: Record<string, unknown>

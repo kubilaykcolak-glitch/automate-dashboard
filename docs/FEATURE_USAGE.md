@@ -64,6 +64,22 @@ Only the Accountancy agent supports rich mode today. Operations and General fall
 
 **Rich and Quick share the same token budget.** Rich-mode turns burn 5-10× more tokens per turn than Quick, so users naturally get fewer of them on the same plan — but there's no separate quota. Whichever mode you use, it draws from your monthly token budget. Free users can technically use Rich, but a single rich turn can eat 10-20% of their 500K budget, so it's effectively a Pro-tier feature in practice.
 
+### Google Sheets / Drive integration
+
+When a user has connected Google in `/dashboard/integrations` (Gmail / Sheets / Drive all use the one Google OAuth grant), the chat agent can read their spreadsheets on demand. The agent has three tools:
+
+- **`google_drive_search`** — find a spreadsheet by name. Returns up to 10 matches with their IDs.
+- **`google_sheets_list_tabs`** — show the tab titles in a workbook so the agent can pick the right one.
+- **`google_sheets_read`** — pull cell values (default first tab, first 1,000 rows). Returns CSV-style data the agent can reason over directly.
+
+Typical flow: the user asks something like *"What's my total revenue this quarter from my Sales Tracker sheet?"*. The agent calls `google_drive_search` for "Sales Tracker", picks the result, optionally lists tabs, then reads the relevant range. No manual export + re-upload.
+
+Limits:
+- 6 Google API calls per turn (defensive — stops a confused agent from spelunking the user's whole Drive).
+- 1,000 rows per `google_sheets_read` call. Agent can re-call with a tighter range to read more.
+- Only available when Google credentials are configured server-side (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) AND the user has actually connected via OAuth.
+- Access tokens auto-refresh server-side using the stored refresh_token; if refresh fails (revoked etc.) the tool returns a clear "reconnect Google" error.
+
 ### Web search
 
 Agents can search the web when they need current information not in their training or skill library. Examples that will trigger a search:

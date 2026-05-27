@@ -168,6 +168,65 @@ async function main() {
       { type: "agent_toolset_20260401" },
       {
         type: "custom",
+        name: "google_drive_search",
+        description:
+          "Search the user's Google Drive for files. Defaults to Google Sheets. Returns up to 10 files matching the name query with their IDs you can pass to google_sheets_read. Use when the user references a specific spreadsheet by name. Only works if the user has connected Google in /dashboard/integrations.",
+        input_schema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Substring to match against file names. Case-insensitive.",
+            },
+            mime_type: {
+              type: "string",
+              description:
+                "Optional. Default 'sheet'. 'all' for any file type, or 'sheet'|'doc'|'pdf'.",
+              enum: ["sheet", "doc", "pdf", "all"],
+            },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        type: "custom",
+        name: "google_sheets_list_tabs",
+        description:
+          "List the tabs inside a Google Sheets workbook. Call before google_sheets_read when you don't know the tab name. Pass the spreadsheet ID from a google_drive_search result.",
+        input_schema: {
+          type: "object",
+          properties: {
+            spreadsheet_id: {
+              type: "string",
+              description: "Spreadsheet ID from a google_drive_search result.",
+            },
+          },
+          required: ["spreadsheet_id"],
+        },
+      },
+      {
+        type: "custom",
+        name: "google_sheets_read",
+        description:
+          "Read cell values from a Google Sheets workbook. Returns a CSV-style payload. If `range` is omitted, reads the first 1,000 rows of the first tab. Cap is 1,000 rows per call. Use to pull the user's actual financial data into the conversation rather than asking them to re-upload.",
+        input_schema: {
+          type: "object",
+          properties: {
+            spreadsheet_id: {
+              type: "string",
+              description: "Spreadsheet ID from a google_drive_search result.",
+            },
+            range: {
+              type: "string",
+              description:
+                "Optional A1-notation range, e.g. 'Sheet1!A1:E100'. Defaults to the first tab's A1:Z1000.",
+            },
+          },
+          required: ["spreadsheet_id"],
+        },
+      },
+      {
+        type: "custom",
         name: "create_export",
         description:
           "Register a file the user can download from the chat. Call this AFTER you have generated and saved the file to /mnt/session/outputs/<filename>. The file appears inline as a download card. Use for CSV/XLSX/PDF deliverables the user explicitly asks for or that contain structured tabular data more useful as a file than inline text. Do not paste paths into your reply.",
