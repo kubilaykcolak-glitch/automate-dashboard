@@ -6,11 +6,14 @@ import { getAgentConfig } from "@/lib/anthropic/agent-configs";
 import { MAX_USER_MESSAGE_CHARS } from "@/lib/anthropic/agents";
 import type { AgentProfileSchema, ProfileField } from "@/lib/anthropic/types";
 import {
-  buildContextString,
+  MAX_CONTEXT_CHARS_PER_FILE,
+  buildContext,
   type ContextFileMetadata,
+  type ExtractedContextFile,
 } from "@/lib/anthropic/context";
 import {
   PAID_PLAN_MONTHLY_LIMIT,
+  PAID_PLAN_MONTHLY_TOKEN_BUDGET,
   checkAndRecordRateLimit,
   getMonthlyRichUsage,
   getMonthlyTokenSummary,
@@ -271,7 +274,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       {
         error:
           usage.plan === "paid"
-            ? `You've used all ${usage.limit} messages on your plan this month.`
+            ? `You've used all ${usage.limit} messages on your plan this month. Limit resets next month.`
             : `You've used all ${usage.limit} free messages this month. Upgrade to Pro for ${PAID_PLAN_MONTHLY_LIMIT} messages/month.`,
         code: "rate_limited",
         usage,
@@ -285,7 +288,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         error:
           usage.plan === "paid"
             ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). Resets next month, or contact us for additional capacity.`
-            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${(5_000_000).toLocaleString()} tokens/month.`,
+            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month.`,
         code: "token_budget_exceeded",
         tokens: {
           used: tokenSummary.totalTokens,
@@ -362,6 +365,7 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   // Build context from attached files.
   let contextString = "";
+  let truncatedFiles: ExtractedContextFile[] = [];
   if (Array.isArray(contextFileIds) && contextFileIds.length > 0) {
     const filesCol = userRef.collection("files");
     const fileSnaps = await Promise.all(
@@ -384,7 +388,9 @@ export async function POST(request: NextRequest): Promise<Response> {
           storagePath: d.storagePath ?? "",
         };
       });
-    contextString = await buildContextString(metadata);
+    const built = await buildContext(metadata);
+    contextString = built.contextString;
+    truncatedFiles = built.truncated;
     if (metadata.length > 0) {
       void logActivity(session.uid, {
         type: "files_attached",
@@ -422,6 +428,20 @@ export async function POST(request: NextRequest): Promise<Response> {
           encoder.encode(`${prefix}:${JSON.stringify(payload)}\n`)
         );
       };
+
+      // Surface any attached files that didn't fit in the per-file char cap.
+      if (truncatedFiles.length > 0) {
+        enqueue("2", [
+          {
+            type: "file_truncated",
+            files: truncatedFiles.map((f) => ({
+              name: f.name,
+              originalChars: f.originalChars,
+              keptChars: MAX_CONTEXT_CHARS_PER_FILE,
+            })),
+          },
+        ]);
+      }
 
       // request.signal aborts when the client closes the connection.
       // Threaded into every upstream Anthropic call so a closed tab stops

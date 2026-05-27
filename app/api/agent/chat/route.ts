@@ -13,12 +13,15 @@ import {
 } from "@/lib/anthropic/agents";
 import type { AgentProfileSchema, ProfileField } from "@/lib/anthropic/types";
 import {
+  MAX_CONTEXT_CHARS_PER_FILE,
   attachContextToMessages,
-  buildContextString,
+  buildContext,
   type ContextFileMetadata,
+  type ExtractedContextFile,
 } from "@/lib/anthropic/context";
 import {
   PAID_PLAN_MONTHLY_LIMIT,
+  PAID_PLAN_MONTHLY_TOKEN_BUDGET,
   checkAndRecordRateLimit,
   getMonthlyTokenSummary,
   getMonthlyUsage,
@@ -248,7 +251,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         error:
           usage.plan === "paid"
             ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). Resets next month, or contact us for additional capacity.`
-            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${(5_000_000).toLocaleString()} tokens/month.`,
+            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month.`,
         code: "token_budget_exceeded",
         tokens: {
           used: tokenSummary.totalTokens,
@@ -357,6 +360,7 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   // Resolve contextFileIds → metadata → extract → context string.
   let contextString = "";
+  let truncatedFiles: ExtractedContextFile[] = [];
   if (Array.isArray(contextFileIds) && contextFileIds.length > 0) {
     const filesCol = userRef.collection("files");
     const fileSnaps = await Promise.all(
@@ -379,7 +383,9 @@ export async function POST(request: NextRequest): Promise<Response> {
           storagePath: d.storagePath ?? "",
         };
       });
-    contextString = await buildContextString(metadata);
+    const built = await buildContext(metadata);
+    contextString = built.contextString;
+    truncatedFiles = built.truncated;
     if (metadata.length > 0) {
       void logActivity(session.uid, {
         type: "files_attached",
@@ -420,6 +426,22 @@ export async function POST(request: NextRequest): Promise<Response> {
           encoder.encode(`${prefix}:${JSON.stringify(payload)}\n`)
         );
       };
+
+      // Surface any attached files that didn't fit in the per-file char cap.
+      // Emitted as a `2:` data event so the chat client can render a small
+      // warning under the user's message — otherwise truncation is silent.
+      if (truncatedFiles.length > 0) {
+        enqueue("2", [
+          {
+            type: "file_truncated",
+            files: truncatedFiles.map((f) => ({
+              name: f.name,
+              originalChars: f.originalChars,
+              keptChars: MAX_CONTEXT_CHARS_PER_FILE,
+            })),
+          },
+        ]);
+      }
 
       // Build system blocks in stable order so prompt caching stays warm
       // across requests: main prompt → user profile → skill manifest. Each

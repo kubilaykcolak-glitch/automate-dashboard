@@ -459,6 +459,27 @@ export default function AgentChatPage() {
                     if (exp && typeof exp.filename === "string") {
                       newExports.push(exp);
                     }
+                  } else if (t === "file_truncated") {
+                    // Server tells us one or more attached files exceeded the
+                    // per-file char cap. Surface as a toast so the user knows
+                    // the agent saw only part of their data.
+                    const truncated = (item as {
+                      files?: Array<{
+                        name?: string;
+                        originalChars?: number;
+                        keptChars?: number;
+                      }>;
+                    }).files ?? [];
+                    if (truncated.length > 0) {
+                      const names = truncated
+                        .map((f) => f.name ?? "file")
+                        .join(", ");
+                      const kept = truncated[0]?.keptChars ?? 50000;
+                      toast.warning(
+                        `Large attached file truncated: ${names}. The agent only saw the first ${kept.toLocaleString()} characters. Split into smaller files for a complete view.`,
+                        { duration: 10000 }
+                      );
+                    }
                   } else if (t === "agent_tool_use") {
                     const obj = item as {
                       name?: string;

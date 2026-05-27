@@ -12,6 +12,16 @@ export interface ContextFileMetadata {
   storagePath: string;
 }
 
+/** Per-file extraction result — exposes truncation so the route can warn
+ *  the user when a large attachment didn't fully fit in the cap. */
+export interface ExtractedContextFile {
+  name: string;
+  text: string;
+  /** Number of chars BEFORE truncation. Same as text.length when not truncated. */
+  originalChars: number;
+  truncated: boolean;
+}
+
 interface AnthropicMessage {
   role: "user" | "assistant";
   content: string;
@@ -135,20 +145,75 @@ function truncate(text: string, max: number): string {
 }
 
 /**
+ * Per-file extraction with truncation reporting. Underlying primitive used by
+ * buildContextString — exposed separately so the chat route can warn the
+ * client which files exceeded MAX_CONTEXT_CHARS_PER_FILE.
+ */
+export async function extractContextFile(
+  file: ContextFileMetadata
+): Promise<ExtractedContextFile> {
+  const raw = await extractTextFromFile(file.storagePath, file.type, file.name);
+  const trimmed = raw.trim();
+  // raw text from extractTextFromFile is already truncated to the cap; to
+  // know the original length we need to extract once more without the cap.
+  // For typical files this is cheap (we already downloaded once and cached).
+  // Faster path: detect the truncation marker we ourselves emit.
+  if (trimmed.includes("[truncated — original length was ")) {
+    const match = trimmed.match(/\[truncated — original length was (\d+) characters/);
+    const originalChars = match ? Number(match[1]) : trimmed.length;
+    return {
+      name: file.name,
+      text: trimmed,
+      originalChars,
+      truncated: true,
+    };
+  }
+  return {
+    name: file.name,
+    text: trimmed,
+    originalChars: trimmed.length,
+    truncated: false,
+  };
+}
+
+/**
  * Formats a list of files into a single context string with clear delimiters.
- * Extracts each file in parallel.
+ * Extracts each file in parallel. Returns the concatenated string plus a
+ * per-file truncation report so the route can surface a warning to the user.
+ */
+export interface BuildContextResult {
+  contextString: string;
+  files: ExtractedContextFile[];
+  truncated: ExtractedContextFile[];
+}
+
+export async function buildContext(
+  files: ContextFileMetadata[]
+): Promise<BuildContextResult> {
+  if (files.length === 0) {
+    return { contextString: "", files: [], truncated: [] };
+  }
+  const extracted = await Promise.all(files.map(extractContextFile));
+  const contextString = extracted
+    .map((f) => `--- File: ${f.name} ---\n${f.text}`)
+    .join("\n\n");
+  return {
+    contextString,
+    files: extracted,
+    truncated: extracted.filter((f) => f.truncated),
+  };
+}
+
+/**
+ * Legacy string-only entry point. Kept so any other caller that only wants
+ * the concatenated context can continue without change; new code should
+ * use buildContext() to get the truncation report.
  */
 export async function buildContextString(
   files: ContextFileMetadata[]
 ): Promise<string> {
-  if (files.length === 0) return "";
-  const sections = await Promise.all(
-    files.map(async (f) => {
-      const text = await extractTextFromFile(f.storagePath, f.type, f.name);
-      return `--- File: ${f.name} ---\n${text}`;
-    })
-  );
-  return sections.join("\n\n");
+  const { contextString } = await buildContext(files);
+  return contextString;
 }
 
 /**
