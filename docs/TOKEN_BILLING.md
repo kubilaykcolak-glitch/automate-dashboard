@@ -82,11 +82,16 @@ FREE_PLAN_MONTHLY_TOKEN_BUDGET   =   500,000 tokens
 PAID_PLAN_MONTHLY_TOKEN_BUDGET   = 5,000,000 tokens
 ```
 
-These are **hard** budgets — once a user crosses their plan's token budget, the chat routes return HTTP 429 with `code: "token_budget_exceeded"` until either the next monthly reset (1st of the month, UTC) or a plan upgrade / token top-up.
+The chat is **subscription-only** — there's no free monthly allowance. Two distinct refusals:
 
-**Tokens are the single billing axis.** Earlier versions ran multiple parallel quotas (a message count, a rich-turn count, and the token budget) side-by-side. That confused the pricing narrative and could leave a user blocked by a count limit while well under budget. Tokens now own the entire surface — see audit finding #32. Rich-mode turns and Quick chats both draw from the same budget; users decide how to spend.
+| Refusal | Status | Code | When |
+|---|---|---|---|
+| Not subscribed | **402 Payment Required** | `subscription_required` | User exists but has no active Pro subscription. Drive them to `/pricing`. |
+| Budget exhausted | **429 Too Many Requests** | `token_budget_exceeded` | Subscribed Pro user has burned through their 5M monthly tokens. Drive them to top-up or wait for reset. |
 
-The per-minute rate limit (10 req/min) survives because it's an abuse / fairness guard, not a pricing concept. It applies regardless of plan.
+**Tokens are the single billing axis.** Earlier versions ran a separate free-tier allowance (500K/month), a message count, and a rich-turn count alongside the token budget. All gone. Pro grants a flat 5M tokens/month; Rich-mode and Quick chats both draw from the same pool. Users decide how to spend.
+
+The per-minute rate limit (10 req/min) is a fairness / abuse guard, not a pricing concept. It applies regardless of plan.
 
 `getMonthlyTokenSummary(uid)` returns the breakdown including `overageTokens = max(0, totalTokens - budget)` for a future billing UI to read.
 

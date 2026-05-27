@@ -12,7 +12,6 @@ import {
   type ExtractedContextFile,
 } from "@/lib/anthropic/context";
 import {
-  PAID_PLAN_MONTHLY_TOKEN_BUDGET,
   checkAndRecordRateLimit,
   getMonthlyTokenSummary,
   recordTokenUsage,
@@ -235,18 +234,22 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   }
 
-  // Single billing gate — token budget. Rich-mode turns are materially
-  // pricier per turn (each one can be 10-100K tokens vs. ~1-5K for Quick),
-  // but they all draw from the same monthly budget. No separate rich-turn
-  // counter; users decide how to spend their allowance.
+  // Subscription-only billing — same two gates as Quick mode.
   const tokenSummary = await getMonthlyTokenSummary(session.uid);
-  if (tokenSummary.totalTokens >= tokenSummary.budget) {
+  if (tokenSummary.plan !== "paid") {
     return NextResponse.json(
       {
         error:
-          tokenSummary.plan === "paid"
-            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). It resets at the start of the next month. To keep chatting now, top up your tokens or contact us about a higher plan.`
-            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month, or wait for the monthly reset.`,
+          "Rich mode is available on Pro. Subscribe to get 5,000,000 tokens/month and full agent access.",
+        code: "subscription_required",
+      },
+      { status: 402 }
+    );
+  }
+  if (tokenSummary.totalTokens >= tokenSummary.budget) {
+    return NextResponse.json(
+      {
+        error: `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). It resets at the start of the next month. To keep chatting now, top up your tokens or contact us about a higher plan.`,
         code: "token_budget_exceeded",
         tokens: {
           used: tokenSummary.totalTokens,

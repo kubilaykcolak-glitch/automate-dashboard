@@ -20,7 +20,6 @@ import {
   type ExtractedContextFile,
 } from "@/lib/anthropic/context";
 import {
-  PAID_PLAN_MONTHLY_TOKEN_BUDGET,
   checkAndRecordRateLimit,
   getMonthlyTokenSummary,
   recordTokenUsage,
@@ -210,16 +209,24 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   }
 
-  // Single billing gate — token budget. Fails fast before any Anthropic
-  // spend. The client surfaces the response to drive an upgrade / top-up CTA.
+  // Subscription-only billing. Two gates run before any Anthropic spend:
+  //   1. Subscription required — chat is paid-only.
+  //   2. Token budget — even subscribed users have a monthly ceiling.
   const tokenSummary = await getMonthlyTokenSummary(session.uid);
-  if (tokenSummary.totalTokens >= tokenSummary.budget) {
+  if (tokenSummary.plan !== "paid") {
     return NextResponse.json(
       {
         error:
-          tokenSummary.plan === "paid"
-            ? `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). It resets at the start of the next month. To keep chatting now, top up your tokens or contact us about a higher plan.`
-            : `You've used your full free-tier token budget (${tokenSummary.budget.toLocaleString()} tokens). Upgrade to Pro for ${PAID_PLAN_MONTHLY_TOKEN_BUDGET.toLocaleString()} tokens/month, or wait for the monthly reset.`,
+          "Chat is available on Pro. Subscribe to get 5,000,000 tokens/month and full access to the agent.",
+        code: "subscription_required",
+      },
+      { status: 402 } // Payment Required
+    );
+  }
+  if (tokenSummary.totalTokens >= tokenSummary.budget) {
+    return NextResponse.json(
+      {
+        error: `You've used your full monthly token budget (${tokenSummary.budget.toLocaleString()} tokens). It resets at the start of the next month. To keep chatting now, top up your tokens or contact us about a higher plan.`,
         code: "token_budget_exceeded",
         tokens: {
           used: tokenSummary.totalTokens,

@@ -46,7 +46,7 @@ First time you open an active agent, a wizard runs through that agent's profile 
 - Sidebar shows the conversation history for that agent.
 - Markdown rendering with code highlighting.
 - Retry on transient errors.
-- **Single-axis billing — tokens.** Each plan grants a monthly token budget (500K free, 5M Pro). Tokens drawn by all chat activity, regardless of mode. When the budget is exhausted, the chat refuses further requests until the next monthly reset (1st of the month UTC) or a plan upgrade / token top-up. See `docs/TOKEN_BILLING.md`.
+- **Subscription-only chat.** Users must hold an active Pro subscription before any chat message is served. Pro grants 5,000,000 tokens/month; tokens are consumed by all chat activity regardless of mode. Non-subscribers see a "Subscribe to start chatting" prompt instead of the chat UI affordances. When a Pro user exhausts the budget, the chat refuses further requests (HTTP 429 `token_budget_exceeded`) until the next monthly reset (1st of the month UTC) or a token top-up. See `docs/TOKEN_BILLING.md`.
 - Per-minute rate limit: 10 requests/min/user (abuse guard, not billing).
 
 ### Quick mode vs Rich mode

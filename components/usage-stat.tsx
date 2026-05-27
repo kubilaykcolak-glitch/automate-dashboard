@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Coins } from "lucide-react";
+import { Coins, Lock } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -10,12 +10,43 @@ import { Progress } from "@/components/ui/progress";
 import type { MonthlyTokenSummary } from "@/lib/firebase/usage";
 
 /**
- * Dashboard-home tile showing this month's token usage at a glance.
- * Click-through goes to /dashboard/billing where the full breakdown lives.
- * Used to show message-count before the single-axis (token-only) billing
- * refactor — see audit finding #32.
+ * Dashboard-home tile. Two states:
+ *   - Subscriber: shows monthly token usage with a progress bar.
+ *   - Non-subscriber: shows a 'Subscribe to start chatting' prompt
+ *     linking to /pricing (because the chat is paid-only).
+ * Click-through goes to /dashboard/billing in both cases for the full
+ * breakdown / management.
  */
 export function UsageStat({ tokens }: { tokens: MonthlyTokenSummary }) {
+  const subscribed = tokens.plan === "paid";
+
+  if (!subscribed) {
+    return (
+      <Link
+        href="/pricing"
+        className="group block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        aria-label="Subscribe to start chatting"
+      >
+        <Card className="transition-colors group-hover:bg-accent/40">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground">
+              Chat access
+            </CardTitle>
+            <Lock className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <div className="text-base font-semibold tracking-tight">
+              Subscribe to start
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Pro · 5M tokens/month · click for plans
+            </p>
+          </CardContent>
+        </Card>
+      </Link>
+    );
+  }
+
   const pct = tokens.budget
     ? Math.min(100, Math.round((tokens.totalTokens / tokens.budget) * 100))
     : 0;
@@ -47,8 +78,7 @@ export function UsageStat({ tokens }: { tokens: MonthlyTokenSummary }) {
             className={danger ? "[&>div]:bg-destructive" : undefined}
           />
           <p className="text-[10px] text-muted-foreground">
-            {tokens.plan === "paid" ? "Pro plan" : "Free plan"}
-            {over ? " · budget reached" : " · view details"}
+            Pro plan{over ? " · budget reached" : " · view details"}
           </p>
         </CardContent>
       </Card>

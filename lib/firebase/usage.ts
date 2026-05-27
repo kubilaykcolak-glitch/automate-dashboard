@@ -4,25 +4,29 @@ import { adminDb } from "./admin";
 import { computeCostUsd, type TokenUsage } from "@/lib/anthropic/pricing";
 
 /**
- * SINGLE-AXIS BILLING MODEL.
+ * SUBSCRIPTION-ONLY BILLING MODEL.
  *
- * Tokens are the unit of account. A user's plan grants a monthly token
- * budget. When they cross it, the chat routes return HTTP 429 with code
- * "token_budget_exceeded" until either:
- *   1. the budget resets at the start of the next UTC month, or
- *   2. they upgrade or purchase additional tokens.
+ * The chat is paid-only. A user must hold an active subscription before
+ * the chat routes will serve a request — there's no free monthly
+ * allowance. Subscribed users get a flat per-month token budget; running
+ * out within a month blocks chat until either the next monthly reset or
+ * a top-up.
  *
- * Historically there were two separate quotas (message count + rich-turn
- * count) running alongside the token budget. Those were removed during
- * audit #32: too many gates confused the pricing narrative and made it
- * possible to be blocked by a count limit while well under budget (or
- * vice-versa). Tokens are now the only billing primitive the user sees.
+ * Two distinct refusal reasons:
+ *   - HTTP 402 + code "subscription_required" — user is signed up but
+ *     not subscribed. Drive them to /pricing.
+ *   - HTTP 429 + code "token_budget_exceeded" — subscribed but burned
+ *     through this month's tokens. Drive them to top-up / wait for reset.
  *
- * Per-minute rate limiting (RATE_LIMIT_MAX_REQUESTS) survives because it's
- * an abuse / fairness guard, not a pricing concept.
+ * Per-minute rate limiting (RATE_LIMIT_MAX_REQUESTS) is a separate abuse
+ * guard, not a billing concept.
+ *
+ * The `Plan` type carries "free" only because Firestore data still has
+ * users whose subscriptionStatus is "none" — that maps to "free" here
+ * and means "no chat access". Callers should treat anything other than
+ * "paid" as a gate, not a tier with reduced features.
  */
 
-export const FREE_PLAN_MONTHLY_TOKEN_BUDGET = 500_000;
 export const PAID_PLAN_MONTHLY_TOKEN_BUDGET = 5_000_000;
 
 export type Plan = "free" | "paid";
@@ -132,10 +136,11 @@ export async function getMonthlyTokenSummary(
   const cacheWrite =
     (data.cacheCreationInputTokens as number | undefined) ?? 0;
   const cost = (data.totalCostUsd as number | undefined) ?? 0;
+  // Non-subscribers have a budget of 0 — the chat route will refuse them
+  // with "subscription_required" before they ever see this number, but
+  // having budget=0 keeps any other caller's logic simple.
   const budget =
-    plan === "paid"
-      ? PAID_PLAN_MONTHLY_TOKEN_BUDGET
-      : FREE_PLAN_MONTHLY_TOKEN_BUDGET;
+    plan === "paid" ? PAID_PLAN_MONTHLY_TOKEN_BUDGET : 0;
   const total = input + output + cacheRead + cacheWrite;
   return {
     month,
