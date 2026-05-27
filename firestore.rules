@@ -19,11 +19,8 @@ service cloud.firestore {
         allow read, write: if request.auth != null && request.auth.uid == uid;
       }
     }
-    match /workspaces/{id} {
-      allow read, write: if request.auth != null
-        && resource.data.ownerId == request.auth.uid;
-      allow create: if request.auth != null
-        && request.resource.data.ownerId == request.auth.uid;
-    }
+    // /workspaces was a planned multi-tenant collection that never got built.
+    // No app code reads or writes it. Removed during audit to keep the rules
+    // file an accurate inventory of what actually exists.
   }
 }

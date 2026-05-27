@@ -81,8 +81,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     console.error("[sessions list] query failed", { uid: session.uid, agentId, code, message });
 
     // FAILED_PRECONDITION = missing composite index. Firestore embeds a
-    // create-index URL in the error string — pass it through to the client
-    // so the user can click it.
+    // create-index URL in the error string — pass that URL through to the
+    // client so the user can click it (the URL inherently includes the
+    // project ID by design; that's not a leak, it's the API). We do NOT
+    // surface the full Firestore error blob to the client — that contains
+    // document paths and other internal metadata users don't need to see.
     if (
       typeof message === "string" &&
       (message.includes("FAILED_PRECONDITION") ||
@@ -95,14 +98,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             "Firestore is missing a composite index for this query. Create it once and this stops happening.",
           code: "missing_index",
           createIndexUrl: urlMatch ? urlMatch[0] : null,
-          details: message,
         },
         { status: 503 }
       );
     }
 
+    // Generic failure — only the server log gets the underlying message.
     return NextResponse.json(
-      { error: "Failed to load sessions.", details: message },
+      { error: "Failed to load sessions." },
       { status: 500 }
     );
   }

@@ -60,18 +60,10 @@ const AGENT_ID_BY_TYPE: Record<string, string | undefined> = {
   // operations + general agents will be added once we expand beyond accountancy.
 };
 
-interface ContextFile {
-  name?: string;
-  type?: string;
-  size?: number;
-  storagePath?: string;
-}
-
 interface ChatRequestBody {
   agentId?: string;
   message?: string;
   sessionId?: string;
-  contextFiles?: ContextFile[];
   contextFileIds?: string[];
 }
 
@@ -707,7 +699,6 @@ export async function POST(request: NextRequest): Promise<Response> {
 
         batch.update(agentRef, {
           messageCount: FieldValue.increment(2),
-          lastSessionId: firestoreSessionId,
           lastMessageAt: now,
         });
 

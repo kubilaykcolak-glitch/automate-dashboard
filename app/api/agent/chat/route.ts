@@ -70,19 +70,10 @@ const MAX_TOOL_ITERATIONS = 8;
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface ContextFile {
-  name?: string;
-  type?: string;
-  size?: number;
-  storagePath?: string;
-}
-
 interface ChatRequestBody {
   agentId?: string;
   message?: string;
   sessionId?: string;
-  /** Lightweight metadata-only context (no extraction). */
-  contextFiles?: ContextFile[];
   /** Firestore doc IDs under /users/{uid}/files. Bytes are extracted server-side. */
   contextFileIds?: string[];
 }
@@ -135,21 +126,6 @@ function stringifyProfileValue(field: ProfileField, raw: unknown): string {
   return String(raw);
 }
 
-function buildUserContent(message: string, files: ContextFile[] | undefined): string {
-  if (!files || files.length === 0) return message;
-  const block = files
-    .map((f) => {
-      const parts = [`- ${f.name ?? "file"}`];
-      const meta: string[] = [];
-      if (f.type) meta.push(f.type);
-      if (typeof f.size === "number") meta.push(`${f.size} bytes`);
-      if (meta.length > 0) parts.push(`(${meta.join(", ")})`);
-      return parts.join(" ");
-    })
-    .join("\n");
-  return `The user has attached the following file(s) for context:\n${block}\n\n---\n\n${message}`;
-}
-
 export async function POST(request: NextRequest): Promise<Response> {
   // Pre-flight: ensure the Anthropic key is configured before any work.
   // Mid-stream "key missing" errors are confusing for the user.
@@ -180,7 +156,6 @@ export async function POST(request: NextRequest): Promise<Response> {
     agentId,
     message,
     sessionId: rawSessionId,
-    contextFiles,
     contextFileIds,
   } = body;
   if (!agentId || !message) {
@@ -356,7 +331,11 @@ export async function POST(request: NextRequest): Promise<Response> {
     };
   });
 
-  const userContent = buildUserContent(message, contextFiles);
+  // The user's prompt as it arrived. (We used to prepend a synthetic
+  // metadata block listing attached files, but that path was never
+  // exercised — clients send contextFileIds, not the metadata variant.
+  // The real per-file context is built below via buildContext().)
+  const userContent = message;
 
   // Resolve contextFileIds → metadata → extract → context string.
   let contextString = "";
@@ -920,7 +899,6 @@ export async function POST(request: NextRequest): Promise<Response> {
 
         batch.update(agentRef, {
           messageCount: FieldValue.increment(2),
-          lastSessionId: sessionId,
           lastMessageAt: now,
         });
 

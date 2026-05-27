@@ -71,38 +71,8 @@ export interface AgentConfig {
 
 export type AgentProfile = Record<string, string | boolean | string[] | null>;
 
-/**
- * Lightweight per-call context that the base runner threads through to
- * Anthropic and to whatever logging/metrics layer wraps it. All optional.
- */
-export interface RunAgentContext {
-  uid?: string;
-  agentId?: string;
-  sessionId?: string;
-  /** Extra instructions appended to the system prompt at call time. */
-  additionalInstructions?: string;
-  /** Free-form metadata for tracing/logging. Not sent to Anthropic. */
-  metadata?: Record<string, unknown>;
-}
-
-export type RunAgentResult =
-  | { ok: true; text: string; usage: AgentUsage; stopReason: string | null }
-  | { ok: false; error: string; code: AgentErrorCode };
-
-export interface AgentUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadInputTokens: number;
-  cacheCreationInputTokens: number;
-}
-
-export type AgentErrorCode =
-  | "missing_api_key"
-  | "rate_limited"
-  | "authentication"
-  | "permission"
-  | "bad_request"
-  | "overloaded"
-  | "timeout"
-  | "empty_response"
-  | "unknown";
+// RunAgentContext / RunAgentResult / AgentUsage / AgentErrorCode used to live
+// here for a non-streaming runAgent() helper that no chat route called.
+// Both the helper and these types were removed during the system audit
+// (finding #13); restore from git history if a non-streaming runner is ever
+// needed again.
